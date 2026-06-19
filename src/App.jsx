@@ -23,6 +23,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
+import { loadReaderMarket, loadReaderSector } from "./naverReader";
 
 const currencyFormatter = new Intl.NumberFormat("ko-KR");
 const percentFormatter = new Intl.NumberFormat("ko-KR", {
@@ -30,9 +31,11 @@ const percentFormatter = new Intl.NumberFormat("ko-KR", {
   minimumFractionDigits: 2
 });
 const staticDataBase = import.meta.env.BASE_URL || "/";
-const defaultApiBase =
-  typeof window !== "undefined" && window.location.hostname.endsWith("github.io") ? "http://127.0.0.1:4173" : "";
-const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || defaultApiBase).replace(/\/$/, "");
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const canUseSameOriginApi =
+  typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port) && !window.location.hostname.endsWith("github.io");
+const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
+const marketPollMs = canUseApi ? 30_000 : 90_000;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
@@ -55,6 +58,42 @@ function loadStaticMarket() {
 
 function loadStaticSector(id) {
   return fetchJson(staticDataUrl(`data/sectors/${id}.json`));
+}
+
+async function loadLiveMarket() {
+  let apiError = null;
+
+  if (canUseApi) {
+    try {
+      return await fetchJson(apiUrl("/api/sectors"));
+    } catch (error) {
+      apiError = error;
+    }
+  }
+
+  try {
+    return await loadReaderMarket();
+  } catch (readerError) {
+    throw apiError || readerError;
+  }
+}
+
+async function loadLiveSector(sector) {
+  let apiError = null;
+
+  if (canUseApi) {
+    try {
+      return await fetchJson(apiUrl(`/api/sectors/${sector.id}`));
+    } catch (error) {
+      apiError = error;
+    }
+  }
+
+  try {
+    return await loadReaderSector(sector.id, sector);
+  } catch (readerError) {
+    throw apiError || readerError;
+  }
 }
 
 function formatTradingValue(millionWon = 0) {
@@ -95,12 +134,25 @@ function useMarketStream() {
     let closed = false;
     let fallbackTimer;
 
+    const loadStaticPreview = async () => {
+      try {
+        const data = await loadStaticMarket();
+        if (!closed) {
+          setSnapshot((current) => current || data);
+          setStreamState((current) => (current === "connecting" ? "static" : current));
+          setError("실시간 수집 준비 중");
+        }
+      } catch {
+        // The live reader path will surface a useful error if both paths fail.
+      }
+    };
+
     const loadFallback = async () => {
       try {
-        const data = await fetchJson(apiUrl("/api/sectors"));
+        const data = await loadLiveMarket();
         if (!closed) {
           setSnapshot(data);
-          setStreamState("polling");
+          setStreamState("live");
           setError("");
         }
       } catch (apiError) {
@@ -120,9 +172,10 @@ function useMarketStream() {
       }
     };
 
-    if (!("EventSource" in window)) {
+    if (!canUseApi || !("EventSource" in window)) {
+      loadStaticPreview();
       loadFallback();
-      fallbackTimer = setInterval(loadFallback, 30_000);
+      fallbackTimer = setInterval(loadFallback, marketPollMs);
       return () => {
         closed = true;
         clearInterval(fallbackTimer);
@@ -147,7 +200,7 @@ function useMarketStream() {
       if (!closed) {
         setStreamState("polling");
         loadFallback();
-        fallbackTimer = fallbackTimer || setInterval(loadFallback, 30_000);
+        fallbackTimer = fallbackTimer || setInterval(loadFallback, marketPollMs);
       }
     });
 
@@ -293,6 +346,7 @@ function SectorDetail({ sector, detail, loading }) {
 export default function App() {
   const { snapshot, streamState, error } = useMarketStream();
   const [selectedId, setSelectedId] = useState("");
+  const [manualSelection, setManualSelection] = useState(false);
   const [query, setQuery] = useState("");
   const [sectorDetail, setSectorDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -320,10 +374,13 @@ export default function App() {
   }));
 
   useEffect(() => {
-    if (!selectedId && rankedSectors.length) {
-      setSelectedId(rankedSectors[0].id);
+    const topSectorId = rankedSectors[0]?.id;
+    const shouldFollowLiveTop = !manualSelection && snapshot?.mode === "pages-reader-live";
+
+    if (topSectorId && (!selectedId || (shouldFollowLiveTop && selectedId !== topSectorId))) {
+      setSelectedId(topSectorId);
     }
-  }, [rankedSectors, selectedId]);
+  }, [manualSelection, rankedSectors, selectedId, snapshot?.mode]);
 
   useEffect(() => {
     if (!selectedSector?.id) return;
@@ -332,8 +389,7 @@ export default function App() {
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        if (streamState === "static") throw new Error("Static Pages mode");
-        const data = await fetchJson(apiUrl(`/api/sectors/${selectedSector.id}`));
+        const data = await loadLiveSector(selectedSector);
         if (!cancelled) setSectorDetail(data);
       } catch {
         try {
@@ -432,7 +488,10 @@ export default function App() {
                 sector={sector}
                 selected={sector.id === selectedSector?.id}
                 maxValue={maxTradingValue}
-                onSelect={(nextSector) => setSelectedId(nextSector.id)}
+                onSelect={(nextSector) => {
+                  setManualSelection(true);
+                  setSelectedId(nextSector.id);
+                }}
               />
             ))}
           </div>

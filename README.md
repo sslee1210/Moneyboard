@@ -24,13 +24,13 @@ npm start
 
 ## GitHub Pages
 
-GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 `VITE_API_BASE_URL`로 지정한 HTTPS API 서버가 있으면 실시간 스트림을 우선 사용하고, 없으면 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 읽습니다.
+GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 브라우저가 `r.jina.ai` HTTPS 리더를 통해 네이버 금융 업종 페이지를 직접 읽고 90초마다 자동 갱신합니다. 리더 경로가 막히거나 지연되면 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 먼저 보여줍니다.
 
 ```bash
 npm run build:pages
 ```
 
-실시간 Pages 배포 예시:
+별도 HTTPS API를 붙이고 싶으면 `VITE_API_BASE_URL`을 지정할 수 있습니다. 이 경우 API 스트림을 우선 사용하고, 실패하면 Pages 리더 경로로 내려갑니다.
 
 ```bash
 VITE_API_BASE_URL=https://your-moneyboard-api.example.com npm run build:pages
