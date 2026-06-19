@@ -30,6 +30,13 @@ const percentFormatter = new Intl.NumberFormat("ko-KR", {
   minimumFractionDigits: 2
 });
 const staticDataBase = import.meta.env.BASE_URL || "/";
+const defaultApiBase =
+  typeof window !== "undefined" && window.location.hostname.endsWith("github.io") ? "http://127.0.0.1:4173" : "";
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || defaultApiBase).replace(/\/$/, "");
+
+function apiUrl(path) {
+  return configuredApiBase ? `${configuredApiBase}${path}` : path;
+}
 
 function staticDataUrl(path) {
   return `${staticDataBase}${path}`.replace(/\/{2,}/g, "/");
@@ -90,7 +97,7 @@ function useMarketStream() {
 
     const loadFallback = async () => {
       try {
-        const data = await fetchJson("/api/sectors");
+        const data = await fetchJson(apiUrl("/api/sectors"));
         if (!closed) {
           setSnapshot(data);
           setStreamState("polling");
@@ -113,15 +120,6 @@ function useMarketStream() {
       }
     };
 
-    if (window.location.hostname.endsWith("github.io")) {
-      loadFallback();
-      fallbackTimer = setInterval(loadFallback, 30_000);
-      return () => {
-        closed = true;
-        clearInterval(fallbackTimer);
-      };
-    }
-
     if (!("EventSource" in window)) {
       loadFallback();
       fallbackTimer = setInterval(loadFallback, 30_000);
@@ -131,7 +129,7 @@ function useMarketStream() {
       };
     }
 
-    const stream = new EventSource("/api/stream");
+    const stream = new EventSource(apiUrl("/api/stream"));
 
     stream.addEventListener("open", () => {
       if (!closed) setStreamState("live");
@@ -335,7 +333,7 @@ export default function App() {
       setDetailLoading(true);
       try {
         if (streamState === "static") throw new Error("Static Pages mode");
-        const data = await fetchJson(`/api/sectors/${selectedSector.id}`);
+        const data = await fetchJson(apiUrl(`/api/sectors/${selectedSector.id}`));
         if (!cancelled) setSectorDetail(data);
       } catch {
         try {

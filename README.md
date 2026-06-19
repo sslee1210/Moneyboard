@@ -24,11 +24,19 @@ npm start
 
 ## GitHub Pages
 
-GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 읽고, 로컬/서버 실행에서는 기존 `/api` 실시간 스트림을 우선 사용합니다.
+GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 `VITE_API_BASE_URL`로 지정한 HTTPS API 서버가 있으면 실시간 스트림을 우선 사용하고, 없으면 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 읽습니다.
 
 ```bash
 npm run build:pages
 ```
+
+실시간 Pages 배포 예시:
+
+```bash
+VITE_API_BASE_URL=https://your-moneyboard-api.example.com npm run build:pages
+```
+
+API 서버는 `npm start`로 실행되는 Express 서버이며, GitHub Pages 도메인의 CORS 요청을 허용합니다.
 
 ## 데이터
 

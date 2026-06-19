@@ -20,6 +20,25 @@ const marketCache = {
   promise: null
 };
 const detailCache = new Map();
+const allowedOrigins = new Set([
+  "http://localhost:4173",
+  "http://127.0.0.1:4173",
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "https://sslee1210.github.io"
+]);
+
+function isAllowedOrigin(origin) {
+  if (!origin) return false;
+  if (allowedOrigins.has(origin)) return true;
+
+  try {
+    const { hostname } = new URL(origin);
+    return hostname.endsWith(".github.io");
+  } catch {
+    return false;
+  }
+}
 
 function compactText(value) {
   return String(value || "")
@@ -318,6 +337,25 @@ async function getMarketSnapshot() {
 
   return marketCache.promise;
 }
+
+app.use((request, response, next) => {
+  const origin = request.headers.origin;
+
+  if (isAllowedOrigin(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+    response.setHeader("Vary", "Origin");
+  }
+
+  response.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (request.method === "OPTIONS") {
+    response.sendStatus(204);
+    return;
+  }
+
+  next();
+});
 
 app.use(express.json());
 
