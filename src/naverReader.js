@@ -1,11 +1,17 @@
 const NAVER_BASE_URL = "https://finance.naver.com";
 const READER_BASE_URL = "https://r.jina.ai/http://finance.naver.com";
+const READER_API_BASE_URL = "https://r.jina.ai/http://api.finance.naver.com";
 const REQUEST_TIMEOUT_MS = 25_000;
 const DETAIL_CACHE_MS = 25_000;
 const MARKET_CACHE_MS = 60_000;
+const HISTORY_CACHE_MS = 120_000;
 const DETAIL_CONCURRENCY = 8;
+const HISTORY_CONCURRENCY = 2;
+const HISTORY_STOCK_LIMIT = 12;
 
 const detailCache = new Map();
+const historyCache = new Map();
+const volumeProfileCache = new Map();
 const marketCache = {
   data: null,
   expiresAt: 0,
@@ -46,6 +52,11 @@ function readerUrl(pathname) {
   return `${READER_BASE_URL}${pathname}${separator}t=${Date.now()}`;
 }
 
+function readerApiUrl(pathname) {
+  const separator = pathname.includes("?") ? "&" : "?";
+  return `${READER_API_BASE_URL}${pathname}${separator}t=${Date.now()}`;
+}
+
 async function fetchReaderText(pathname) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -66,6 +77,62 @@ async function fetchReaderText(pathname) {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchReaderApiText(pathname) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(readerApiUrl(pathname), {
+      signal: controller.signal,
+      headers: {
+        accept: "text/plain, text/markdown"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Reader API responded with ${response.status}`);
+    }
+
+    return response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function formatDateParam(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function addDays(date, days) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function parseSiseJsonRows(text) {
+  const rows = [];
+  const rowPattern =
+    /\["(\d{8})",\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)\]/g;
+  let match;
+
+  while ((match = rowPattern.exec(text))) {
+    rows.push({
+      date: match[1],
+      open: Number(match[2]),
+      high: Number(match[3]),
+      low: Number(match[4]),
+      close: Number(match[5]),
+      volume: Number(match[6]),
+      foreignRate: Number(match[7])
+    });
+  }
+
+  return rows;
 }
 
 function parseSectorList(markdown) {
@@ -259,7 +326,7 @@ export async function loadReaderMarket(force = false) {
   marketCache.promise = fetchReaderText("/sise/sise_group.naver?type=upjong")
     .then(parseSectorList)
     .then(async (sectors) => {
-      const details = await mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => loadReaderSector(sector.id, sector));
+      const details = await mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => loadReaderSector(sector.id, sector, force));
       const summaries = details.map(summarizeSector).sort((a, b) => b.tradingValueMillion - a.tradingValueMillion);
       const totalTradingValueMillion = summaries.reduce((sum, sector) => sum + sector.tradingValueMillion, 0);
       const totalVolume = summaries.reduce((sum, sector) => sum + sector.volume, 0);
@@ -309,4 +376,171 @@ export async function loadReaderMarket(force = false) {
     });
 
   return marketCache.promise;
+}
+
+async function loadStockHistory(code, timeframe, force = false) {
+  const cacheKey = `${code}:${timeframe}`;
+  const cached = historyCache.get(cacheKey);
+
+  if (!force && cached?.data && cached.expiresAt > Date.now()) return cached.data;
+  if (!force && cached?.promise) return cached.promise;
+
+  const endDate = new Date();
+  const lookbackDays = timeframe === "month" ? 420 : timeframe === "week" ? 100 : 70;
+  const startDate = addDays(endDate, -lookbackDays);
+  const path = `/siseJson.naver?symbol=${code}&requestType=1&startTime=${formatDateParam(
+    startDate
+  )}&endTime=${formatDateParam(endDate)}&timeframe=${timeframe}`;
+
+  const promise = fetchReaderApiText(path)
+    .then(parseSiseJsonRows)
+    .then((rows) => {
+      const last = rows.at(-1) || null;
+      const data = {
+        code,
+        timeframe,
+        date: last?.date || null,
+        volume: last?.volume || 0,
+        close: last?.close || 0,
+        rows
+      };
+
+      historyCache.set(cacheKey, {
+        data,
+        expiresAt: Date.now() + HISTORY_CACHE_MS,
+        promise: null
+      });
+
+      return data;
+    })
+    .catch((error) => {
+      const data = cached?.data || {
+        code,
+        timeframe,
+        date: null,
+        volume: 0,
+        close: 0,
+        rows: [],
+        error: error.message
+      };
+
+      historyCache.set(cacheKey, {
+        data,
+        expiresAt: Date.now() + Math.min(HISTORY_CACHE_MS, 30_000),
+        promise: null
+      });
+
+      return data;
+    });
+
+  historyCache.set(cacheKey, {
+    data: cached?.data,
+    expiresAt: cached?.expiresAt || 0,
+    promise
+  });
+
+  return promise;
+}
+
+export async function loadReaderVolumeProfile(stocks, { force = false, limit = HISTORY_STOCK_LIMIT } = {}) {
+  const sample = (stocks || []).slice(0, limit);
+  const cacheKey = sample.map((stock) => stock.code).join(",");
+  const cached = volumeProfileCache.get(cacheKey);
+
+  if (!sample.length) {
+    return {
+      sampleSize: 0,
+      limit,
+      byCode: {},
+      totals: {
+        day: 0,
+        week: 0,
+        month: 0
+      },
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  if (!force && cached?.data && cached.expiresAt > Date.now()) return cached.data;
+  if (!force && cached?.promise) return cached.promise;
+
+  const promise = mapLimit(sample, HISTORY_CONCURRENCY, async (stock) => {
+    const history = await loadStockHistory(stock.code, "day", force);
+    const rows = history.rows || [];
+    const sumRecentVolume = (count) => rows.slice(-count).reduce((sum, row) => sum + row.volume, 0);
+    const hasHistory = rows.length > 0 && !history.error;
+
+    return {
+      code: stock.code,
+      name: stock.name,
+      day: stock.volume || history.volume || 0,
+      week: hasHistory ? sumRecentVolume(5) : null,
+      month: hasHistory ? sumRecentVolume(20) : null,
+      weekDate: history.date,
+      monthDate: history.date,
+      error: history.error || null
+    };
+  })
+    .then((items) => {
+      const byCode = Object.fromEntries(items.map((item) => [item.code, item]));
+      const data = {
+        sampleSize: sample.length,
+        limit,
+        byCode,
+        counts: {
+          day: items.filter((item) => item.day !== null && item.day !== undefined).length,
+          week: items.filter((item) => item.week !== null && item.week !== undefined).length,
+          month: items.filter((item) => item.month !== null && item.month !== undefined).length
+        },
+        totals: {
+          day: items.reduce((sum, item) => sum + (item.day || 0), 0),
+          week: items.reduce((sum, item) => sum + (item.week || 0), 0),
+          month: items.reduce((sum, item) => sum + (item.month || 0), 0)
+        },
+        updatedAt: new Date().toISOString()
+      };
+
+      volumeProfileCache.set(cacheKey, {
+        data,
+        expiresAt: Date.now() + HISTORY_CACHE_MS,
+        promise: null
+      });
+
+      return data;
+    })
+    .catch((error) => {
+      const data = cached?.data || {
+        sampleSize: sample.length,
+        limit,
+        byCode: {},
+        totals: {
+          day: 0,
+          week: 0,
+          month: 0
+        },
+        counts: {
+          day: 0,
+          week: 0,
+          month: 0
+        },
+        updatedAt: new Date().toISOString(),
+        error: error.message
+      };
+
+      volumeProfileCache.set(cacheKey, {
+        data,
+        expiresAt: Date.now() + Math.min(HISTORY_CACHE_MS, 30_000),
+        promise: null
+      });
+
+      return data;
+    });
+
+  volumeProfileCache.set(cacheKey, {
+    data: cached?.data,
+    expiresAt: cached?.expiresAt || 0,
+    promise
+  });
+
+  return promise;
 }

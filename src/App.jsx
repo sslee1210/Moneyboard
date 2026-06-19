@@ -23,7 +23,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { loadReaderMarket, loadReaderSector } from "./naverReader";
+import { loadReaderMarket, loadReaderSector, loadReaderVolumeProfile } from "./naverReader";
 
 const currencyFormatter = new Intl.NumberFormat("ko-KR");
 const percentFormatter = new Intl.NumberFormat("ko-KR", {
@@ -35,7 +35,14 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$
 const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port) && !window.location.hostname.endsWith("github.io");
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
-const marketPollMs = canUseApi ? 30_000 : 90_000;
+const apiFallbackPollMs = 30_000;
+const volumePeriods = [
+  { id: "day", label: "일일" },
+  { id: "week", label: "주간" },
+  { id: "month", label: "월간" }
+];
+const volumePeriodLabels = Object.fromEntries(volumePeriods.map((period) => [period.id, period.label]));
+const volumeHistoryLimit = 12;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
@@ -60,7 +67,7 @@ function loadStaticSector(id) {
   return fetchJson(staticDataUrl(`data/sectors/${id}.json`));
 }
 
-async function loadLiveMarket() {
+async function loadLiveMarket({ forceReader = false } = {}) {
   let apiError = null;
 
   if (canUseApi) {
@@ -72,13 +79,13 @@ async function loadLiveMarket() {
   }
 
   try {
-    return await loadReaderMarket();
+    return await loadReaderMarket(forceReader);
   } catch (readerError) {
     throw apiError || readerError;
   }
 }
 
-async function loadLiveSector(sector) {
+async function loadLiveSector(sector, { forceReader = false } = {}) {
   let apiError = null;
 
   if (canUseApi) {
@@ -90,7 +97,11 @@ async function loadLiveSector(sector) {
   }
 
   try {
-    return await loadReaderSector(sector.id, sector);
+    const data = await loadReaderSector(sector.id, sector, forceReader);
+    if ((data?.error || sector.stockCount > 0) && !data?.stocks?.length) {
+      throw new Error(data?.error || "Empty sector detail");
+    }
+    return data;
   } catch (readerError) {
     throw apiError || readerError;
   }
@@ -108,6 +119,18 @@ function formatTradingValue(millionWon = 0) {
 
 function formatNumber(value = 0) {
   return currencyFormatter.format(Math.round(value));
+}
+
+function formatVolume(value) {
+  if (value === null || value === undefined) return "-";
+  const rounded = Math.round(value);
+  if (rounded >= 100_000_000) {
+    return `${percentFormatter.format(rounded / 100_000_000)}억주`;
+  }
+  if (rounded >= 10_000) {
+    return `${percentFormatter.format(rounded / 10_000)}만주`;
+  }
+  return `${currencyFormatter.format(rounded)}주`;
 }
 
 function formatPercent(value = 0) {
@@ -133,6 +156,7 @@ function useMarketStream() {
   useEffect(() => {
     let closed = false;
     let fallbackTimer;
+    let fallbackLoopStarted = false;
 
     const loadStaticPreview = async () => {
       try {
@@ -147,9 +171,9 @@ function useMarketStream() {
       }
     };
 
-    const loadFallback = async () => {
+    const loadFallback = async ({ forceReader = false } = {}) => {
       try {
-        const data = await loadLiveMarket();
+        const data = await loadLiveMarket({ forceReader });
         if (!closed) {
           setSnapshot(data);
           setStreamState("live");
@@ -172,13 +196,26 @@ function useMarketStream() {
       }
     };
 
+    const startFallbackLoop = ({ forceReader = false, delayMs = apiFallbackPollMs } = {}) => {
+      if (fallbackLoopStarted) return;
+      fallbackLoopStarted = true;
+
+      const run = async () => {
+        await loadFallback({ forceReader });
+        if (!closed) {
+          fallbackTimer = window.setTimeout(run, delayMs);
+        }
+      };
+
+      void run();
+    };
+
     if (!canUseApi || !("EventSource" in window)) {
       loadStaticPreview();
-      loadFallback();
-      fallbackTimer = setInterval(loadFallback, marketPollMs);
+      startFallbackLoop({ forceReader: !canUseApi, delayMs: canUseApi ? apiFallbackPollMs : 0 });
       return () => {
         closed = true;
-        clearInterval(fallbackTimer);
+        clearTimeout(fallbackTimer);
       };
     }
 
@@ -199,15 +236,14 @@ function useMarketStream() {
     stream.addEventListener("error", () => {
       if (!closed) {
         setStreamState("polling");
-        loadFallback();
-        fallbackTimer = fallbackTimer || setInterval(loadFallback, marketPollMs);
+        startFallbackLoop();
       }
     });
 
     return () => {
       closed = true;
       stream.close();
-      clearInterval(fallbackTimer);
+      clearTimeout(fallbackTimer);
     };
   }, []);
 
@@ -248,7 +284,47 @@ function SectorRow({ sector, selected, maxValue, onSelect }) {
   );
 }
 
-function StockTable({ stocks }) {
+function stockPeriodVolume(stock, volumeProfile, period) {
+  if (period === "day") return stock.volume || 0;
+  const periodData = volumeProfile?.byCode?.[stock.code];
+  return periodData?.[period] ?? stock.periodVolumes?.[period] ?? null;
+}
+
+function buildStaticVolumeProfile(stocks) {
+  const sample = (stocks || []).slice(0, volumeHistoryLimit);
+  const items = sample
+    .map((stock) => ({
+      code: stock.code,
+      name: stock.name,
+      day: stock.periodVolumes?.day ?? stock.volume ?? 0,
+      week: stock.periodVolumes?.week ?? null,
+      month: stock.periodVolumes?.month ?? null,
+      weekDate: stock.periodVolumes?.date ?? null,
+      monthDate: stock.periodVolumes?.date ?? null
+    }))
+    .filter((item) => item.day || item.week || item.month);
+
+  if (!items.length) return null;
+
+  return {
+    sampleSize: items.length,
+    limit: volumeHistoryLimit,
+    byCode: Object.fromEntries(items.map((item) => [item.code, item])),
+    counts: {
+      day: items.filter((item) => item.day !== null && item.day !== undefined).length,
+      week: items.filter((item) => item.week !== null && item.week !== undefined).length,
+      month: items.filter((item) => item.month !== null && item.month !== undefined).length
+    },
+    totals: {
+      day: items.reduce((sum, item) => sum + (item.day || 0), 0),
+      week: items.reduce((sum, item) => sum + (item.week || 0), 0),
+      month: items.reduce((sum, item) => sum + (item.month || 0), 0)
+    },
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function StockTable({ stocks, volumeProfile }) {
   return (
     <div className="table-wrap">
       <table>
@@ -257,38 +333,64 @@ function StockTable({ stocks }) {
             <th>종목</th>
             <th>현재가</th>
             <th>등락률</th>
-            <th>거래량</th>
+            <th>일 거래량</th>
+            <th>주간 거래량</th>
+            <th>월간 거래량</th>
             <th>거래대금</th>
           </tr>
         </thead>
         <tbody>
-          {stocks.map((stock) => (
-            <tr key={stock.code}>
-              <td>
-                <a href={stock.naverUrl} target="_blank" rel="noreferrer">
-                  {stock.name}
-                </a>
-                <span>{stock.code} · {stock.market}</span>
-              </td>
-              <td>{formatNumber(stock.price)}</td>
-              <td className={changeClass(stock.changeRate)}>{formatPercent(stock.changeRate)}</td>
-              <td>{formatNumber(stock.volume)}</td>
-              <td>{formatTradingValue(stock.tradeAmountMillion)}</td>
-            </tr>
-          ))}
+          {stocks.map((stock) => {
+            const periodData = volumeProfile?.byCode?.[stock.code] || stock.periodVolumes;
+
+            return (
+              <tr key={stock.code}>
+                <td>
+                  <a href={stock.naverUrl} target="_blank" rel="noreferrer">
+                    {stock.name}
+                  </a>
+                  <span>{stock.code} · {stock.market}</span>
+                </td>
+                <td>{formatNumber(stock.price)}</td>
+                <td className={changeClass(stock.changeRate)}>{formatPercent(stock.changeRate)}</td>
+                <td>{formatVolume(stock.volume)}</td>
+                <td>{formatVolume(periodData?.week)}</td>
+                <td>{formatVolume(periodData?.month)}</td>
+                <td>{formatTradingValue(stock.tradeAmountMillion)}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-function SectorDetail({ sector, detail, loading }) {
+function SectorDetail({
+  sector,
+  detail,
+  loading,
+  volumePeriod,
+  onVolumePeriodChange,
+  volumeProfile,
+  volumeLoading
+}) {
   const stocks = detail?.stocks || sector?.topStocks || [];
-  const chartData = stocks.slice(0, 12).map((stock) => ({
-    name: shortName(stock.name),
-    거래대금: Math.round(stock.tradeAmountMillion),
-    등락률: Number(stock.changeRate.toFixed(2))
-  }));
+  const periodLabel = volumePeriodLabels[volumePeriod] || "일일";
+  const sampleSize = volumeProfile?.sampleSize || Math.min(stocks.length, volumeHistoryLimit);
+  const hasSelectedVolume = stocks.length > 0 && (volumePeriod === "day" || (volumeProfile?.counts?.[volumePeriod] || 0) > 0);
+  const selectedVolumeTotal =
+    volumeProfile?.totals?.[volumePeriod] ??
+    stocks.slice(0, sampleSize).reduce((sum, stock) => sum + (stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0), 0);
+  const chartData = stocks
+    .map((stock) => ({
+      name: shortName(stock.name),
+      거래량: stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0,
+      등락률: Number(stock.changeRate.toFixed(2))
+    }))
+    .filter((stock) => stock.거래량 > 0)
+    .sort((left, right) => right.거래량 - left.거래량)
+    .slice(0, 12);
 
   return (
     <section className="detail-panel">
@@ -297,9 +399,23 @@ function SectorDetail({ sector, detail, loading }) {
           <span className="eyebrow">선택 섹터</span>
           <h2>{sector?.name || "섹터 선택"}</h2>
         </div>
-        <div className={`status-dot ${loading ? "loading" : "live"}`}>
-          <span />
-          {loading ? "갱신 중" : "동기화"}
+        <div className="detail-actions">
+          <div className="period-toggle" role="tablist" aria-label="거래량 기간">
+            {volumePeriods.map((period) => (
+              <button
+                key={period.id}
+                className={period.id === volumePeriod ? "is-active" : ""}
+                type="button"
+                onClick={() => onVolumePeriodChange(period.id)}
+              >
+                {period.label}
+              </button>
+            ))}
+          </div>
+          <div className={`status-dot ${loading || volumeLoading ? "loading" : "live"}`}>
+            <span />
+            {loading || volumeLoading ? "갱신 중" : "동기화"}
+          </div>
         </div>
       </div>
 
@@ -307,6 +423,11 @@ function SectorDetail({ sector, detail, loading }) {
         <div>
           <span>거래대금</span>
           <strong>{formatTradingValue(detail?.tradingValueMillion || sector?.tradingValueMillion)}</strong>
+        </div>
+        <div>
+          <span>{periodLabel} 거래량</span>
+          <strong>{volumeLoading ? "수집 중" : hasSelectedVolume ? formatVolume(selectedVolumeTotal) : "-"}</strong>
+          <small>상위 {sampleSize}종목 기준</small>
         </div>
         <div>
           <span>가중 등락률</span>
@@ -323,22 +444,22 @@ function SectorDetail({ sector, detail, loading }) {
       <div className="chart-card detail-chart">
         <div className="chart-title">
           <LineChart size={18} />
-          <span>거래대금 상위 종목</span>
+          <span>{periodLabel} 거래량 상위 종목</span>
         </div>
         <ResponsiveContainer width="100%" height={260}>
           <ComposedChart data={chartData} margin={{ top: 10, right: 10, bottom: 0, left: 0 }}>
             <CartesianGrid stroke="#e7e9ef" vertical={false} />
             <XAxis dataKey="name" tick={{ fontSize: 11 }} interval={0} />
-            <YAxis yAxisId="left" tick={{ fontSize: 11 }} tickFormatter={formatTradingValue} width={58} />
+            <YAxis yAxisId="left" tick={{ fontSize: 11 }} tickFormatter={formatVolume} width={72} />
             <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 11 }} tickFormatter={(value) => `${value}%`} />
-            <Tooltip formatter={(value, name) => (name === "거래대금" ? formatTradingValue(value) : `${value}%`)} />
-            <Bar yAxisId="left" dataKey="거래대금" radius={[4, 4, 0, 0]} fill="#2f7d68" />
+            <Tooltip formatter={(value, name) => (name === "거래량" ? formatVolume(value) : `${value}%`)} />
+            <Bar yAxisId="left" dataKey="거래량" radius={[4, 4, 0, 0]} fill="#2f7d68" />
             <Line yAxisId="right" type="monotone" dataKey="등락률" stroke="#d65a31" strokeWidth={2} dot={false} />
           </ComposedChart>
         </ResponsiveContainer>
       </div>
 
-      <StockTable stocks={stocks} />
+      <StockTable stocks={stocks} volumeProfile={volumeProfile} />
     </section>
   );
 }
@@ -350,12 +471,16 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [sectorDetail, setSectorDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [volumePeriod, setVolumePeriod] = useState("day");
+  const [volumeProfile, setVolumeProfile] = useState(null);
+  const [volumeLoading, setVolumeLoading] = useState(false);
 
   const rankedSectors = useMemo(() => {
     return (snapshot?.sectors || []).map((sector, index) => ({ ...sector, rank: index + 1 }));
   }, [snapshot]);
 
-  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || rankedSectors[0];
+  const defaultSector = rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
+  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
 
   const filteredSectors = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -367,6 +492,9 @@ export default function App() {
   }, [rankedSectors, query]);
 
   const maxTradingValue = rankedSectors[0]?.tradingValueMillion || 0;
+  const volumeProfileKey = useMemo(() => {
+    return (sectorDetail?.stocks || []).slice(0, volumeHistoryLimit).map((stock) => stock.code).join(",");
+  }, [sectorDetail?.stocks]);
   const topChartData = rankedSectors.slice(0, 12).map((sector) => ({
     name: shortName(sector.name),
     거래대금: Math.round(sector.tradingValueMillion),
@@ -374,7 +502,7 @@ export default function App() {
   }));
 
   useEffect(() => {
-    const topSectorId = rankedSectors[0]?.id;
+    const topSectorId = (rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0])?.id;
     const shouldFollowLiveTop = !manualSelection && snapshot?.mode === "pages-reader-live";
 
     if (topSectorId && (!selectedId || (shouldFollowLiveTop && selectedId !== topSectorId))) {
@@ -386,10 +514,11 @@ export default function App() {
     if (!selectedSector?.id) return;
 
     let cancelled = false;
+    let timer;
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const data = await loadLiveSector(selectedSector);
+        const data = await loadLiveSector(selectedSector, { forceReader: !canUseApi });
         if (!cancelled) setSectorDetail(data);
       } catch {
         try {
@@ -403,13 +532,53 @@ export default function App() {
       }
     }
 
-    loadDetail();
-    const timer = setInterval(loadDetail, 30_000);
+    const run = async () => {
+      await loadDetail();
+      if (!cancelled) {
+        timer = window.setTimeout(run, canUseApi ? apiFallbackPollMs : 0);
+      }
+    };
+
+    void run();
     return () => {
       cancelled = true;
-      clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [selectedSector?.id, snapshot?.updatedAt, streamState]);
+
+  useEffect(() => {
+    if (!volumeProfileKey || !sectorDetail?.stocks?.length) {
+      setVolumeProfile(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function loadVolumeProfile() {
+      setVolumeLoading(true);
+      const staticProfile = buildStaticVolumeProfile(sectorDetail.stocks);
+
+      try {
+        if (!cancelled && staticProfile) setVolumeProfile(staticProfile);
+
+        const data = await loadReaderVolumeProfile(sectorDetail.stocks, {
+          force: !canUseApi,
+          limit: volumeHistoryLimit
+        });
+        const staticCoverage = (staticProfile?.counts?.week || 0) + (staticProfile?.counts?.month || 0);
+        const liveCoverage = (data?.counts?.week || 0) + (data?.counts?.month || 0);
+
+        if (!cancelled && (!staticProfile || liveCoverage >= staticCoverage)) setVolumeProfile(data);
+      } finally {
+        if (!cancelled) setVolumeLoading(false);
+      }
+    }
+
+    loadVolumeProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, [volumeProfileKey]);
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
   const updatedTime = snapshot?.updatedAt
@@ -540,7 +709,15 @@ export default function App() {
             ))}
           </div>
 
-          <SectorDetail sector={selectedSector} detail={sectorDetail} loading={detailLoading} />
+          <SectorDetail
+            sector={selectedSector}
+            detail={sectorDetail}
+            loading={detailLoading}
+            volumePeriod={volumePeriod}
+            onVolumePeriodChange={setVolumePeriod}
+            volumeProfile={volumeProfile}
+            volumeLoading={volumeLoading}
+          />
         </section>
       </section>
 

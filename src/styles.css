@@ -401,7 +401,7 @@ h2 {
 
 .detail-stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   padding: 14px 18px 0;
 }
@@ -425,6 +425,47 @@ h2 {
   margin-top: 8px;
   color: #171c21;
   font-size: 20px;
+}
+
+.detail-stats small {
+  display: block;
+  margin-top: 5px;
+  color: #7b8387;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.detail-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.period-toggle {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid #d9ded9;
+  border-radius: 8px;
+  background: #f8faf8;
+}
+
+.period-toggle button {
+  height: 26px;
+  min-width: 42px;
+  padding: 0 9px;
+  border-radius: 6px;
+  background: transparent;
+  color: #657076;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.period-toggle button.is-active {
+  background: #1d2228;
+  color: #ffffff;
 }
 
 .status-dot {
@@ -460,7 +501,7 @@ h2 {
 
 table {
   width: 100%;
-  min-width: 720px;
+  min-width: 920px;
   border-collapse: collapse;
 }
 
@@ -548,6 +589,11 @@ footer {
 
   .app-header,
   .panel-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-actions {
     align-items: flex-start;
     flex-direction: column;
   }
