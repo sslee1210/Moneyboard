@@ -22,6 +22,14 @@ npm run build
 npm start
 ```
 
+## GitHub Pages
+
+GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 읽고, 로컬/서버 실행에서는 기존 `/api` 실시간 스트림을 우선 사용합니다.
+
+```bash
+npm run build:pages
+```
+
 ## 데이터
 
 - 기본 데이터 소스는 네이버 금융 업종별 시세와 업종 상세 페이지입니다.

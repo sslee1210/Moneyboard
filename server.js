@@ -12,7 +12,8 @@ const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 8);
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 const marketCache = {
   data: null,
   expiresAt: 0,
@@ -389,6 +390,10 @@ app.use((request, response, next) => {
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Moneyboard server listening on http://localhost:${PORT}`);
-});
+export { app, buildMarketSnapshot, getMarketSnapshot, getSectorDetail };
+
+if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
+  app.listen(PORT, () => {
+    console.log(`Moneyboard server listening on http://localhost:${PORT}`);
+  });
+}

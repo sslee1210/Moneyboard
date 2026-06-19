@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "server": "node server.js",
+    "snapshot": "node scripts/generate-static-data.mjs",
     "build": "vite build",
+    "build:pages": "npm run snapshot && vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.js"
   },

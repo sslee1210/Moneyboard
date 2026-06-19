@@ -29,6 +29,26 @@ const percentFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2
 });
+const staticDataBase = import.meta.env.BASE_URL || "/";
+
+function staticDataUrl(path) {
+  return `${staticDataBase}${path}`.replace(/\/{2,}/g, "/");
+}
+
+async function fetchJson(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  const response = await fetch(`${url}${separator}t=${Date.now()}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
+function loadStaticMarket() {
+  return fetchJson(staticDataUrl("data/market.json"));
+}
+
+function loadStaticSector(id) {
+  return fetchJson(staticDataUrl(`data/sectors/${id}.json`));
+}
 
 function formatTradingValue(millionWon = 0) {
   if (millionWon >= 100_000) {
@@ -70,21 +90,37 @@ function useMarketStream() {
 
     const loadFallback = async () => {
       try {
-        const response = await fetch("/api/sectors");
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
+        const data = await fetchJson("/api/sectors");
         if (!closed) {
           setSnapshot(data);
           setStreamState("polling");
           setError("");
         }
-      } catch (fetchError) {
-        if (!closed) {
-          setStreamState("offline");
-          setError(fetchError.message);
+      } catch (apiError) {
+        try {
+          const data = await loadStaticMarket();
+          if (!closed) {
+            setSnapshot(data);
+            setStreamState("static");
+            setError("정적 스냅샷");
+          }
+        } catch (staticError) {
+          if (!closed) {
+            setStreamState("offline");
+            setError(staticError.message || apiError.message);
+          }
         }
       }
     };
+
+    if (window.location.hostname.endsWith("github.io")) {
+      loadFallback();
+      fallbackTimer = setInterval(loadFallback, 30_000);
+      return () => {
+        closed = true;
+        clearInterval(fallbackTimer);
+      };
+    }
 
     if (!("EventSource" in window)) {
       loadFallback();
@@ -298,12 +334,16 @@ export default function App() {
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const response = await fetch(`/api/sectors/${selectedSector.id}`);
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
+        if (streamState === "static") throw new Error("Static Pages mode");
+        const data = await fetchJson(`/api/sectors/${selectedSector.id}`);
         if (!cancelled) setSectorDetail(data);
       } catch {
-        if (!cancelled) setSectorDetail(null);
+        try {
+          const data = await loadStaticSector(selectedSector.id);
+          if (!cancelled) setSectorDetail(data);
+        } catch {
+          if (!cancelled) setSectorDetail(null);
+        }
       } finally {
         if (!cancelled) setDetailLoading(false);
       }
@@ -315,7 +355,7 @@ export default function App() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [selectedSector?.id, snapshot?.updatedAt]);
+  }, [selectedSector?.id, snapshot?.updatedAt, streamState]);
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
   const updatedTime = snapshot?.updatedAt
@@ -338,7 +378,15 @@ export default function App() {
         </div>
         <div className={`stream-pill ${streamState}`}>
           <Radio size={16} />
-          <span>{streamState === "live" ? "LIVE" : streamState === "polling" ? "AUTO" : "OFFLINE"}</span>
+          <span>
+            {streamState === "live"
+              ? "LIVE"
+              : streamState === "polling"
+                ? "AUTO"
+                : streamState === "static"
+                  ? "SNAPSHOT"
+                  : "OFFLINE"}
+          </span>
         </div>
       </header>
 
