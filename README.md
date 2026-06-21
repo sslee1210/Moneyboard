@@ -2,6 +2,10 @@
 
 국내 주식 업종별 거래대금과 섹터별 종목 흐름을 자동 갱신으로 보여주는 대시보드입니다.
 
+## 바로가기
+
+[Moneyboard GitHub Pages](https://sslee1210.github.io/Moneyboard/)
+
 ## 실행
 
 ```bash
@@ -23,6 +27,8 @@ npm start
 ```
 
 ## GitHub Pages
+
+공개 사이트: [https://sslee1210.github.io/Moneyboard/](https://sslee1210.github.io/Moneyboard/)
 
 GitHub Pages는 정적 호스팅이므로 Express API가 실행되지 않습니다. Pages 배포에서는 브라우저가 `r.jina.ai` HTTPS 리더를 통해 네이버 금융 업종 페이지를 직접 읽고, 고정 대기 시간 없이 이전 수집이 끝나는 즉시 다음 수집을 시작합니다. 리더 경로가 막히거나 지연되면 빌드 시점에 `public/data` 아래에 생성한 시장 스냅샷을 먼저 보여줍니다.
 
