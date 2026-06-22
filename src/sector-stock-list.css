@@ -189,3 +189,82 @@
     justify-content: space-between;
   }
 }
+
+
+/* Stock buy/sell flow and foreigner flow */
+.sector-stock-flow {
+  display: grid;
+  gap: 5px;
+  padding-top: 3px;
+}
+
+.sector-stock-flow-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #60696d;
+  font-size: 10.5px;
+  font-weight: 900;
+}
+
+.sector-stock-flow-head em {
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.sector-stock-flow-bar {
+  display: flex;
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: #e9ece9;
+}
+
+.sector-stock-flow-bar i {
+  display: block;
+  height: 100%;
+}
+
+.sector-stock-flow-bar .buy {
+  background: #2f7d68;
+}
+
+.sector-stock-flow-bar .sell {
+  background: #c94f4f;
+}
+
+.sector-stock-flow-bar.neutral .buy {
+  background: #7a8b91;
+}
+
+.sector-stock-flow-bar.neutral .sell {
+  background: #b8c0c3;
+}
+
+.sector-stock-foreign {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  font-weight: 900;
+}
+
+.sector-stock-foreign em {
+  color: #697276;
+  font-style: normal;
+  white-space: nowrap;
+}
+
+.sector-stock-foreign strong {
+  font-size: 10.5px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .sector-stock-flow {
+    padding-top: 2px;
+  }
+}

@@ -18,6 +18,9 @@ const __dirname = path.dirname(__filename);
 
 const marketCache = { data: null, expiresAt: 0, promise: null };
 const detailCache = new Map();
+const stockFlowCache = new Map();
+const STOCK_FLOW_CACHE_MS = Number(process.env.STOCK_FLOW_CACHE_MS || 60_000);
+const STOCK_FLOW_CONCURRENCY = Number(process.env.STOCK_FLOW_CONCURRENCY || 4);
 
 const allowedOrigins = new Set([
   "http://localhost:4173",
@@ -143,6 +146,205 @@ function sortStocksByVolume(stocks) {
   });
 }
 
+function normalizeRatioParts(buyVolume, sellVolume) {
+  const buy = Number(buyVolume || 0);
+  const sell = Number(sellVolume || 0);
+  const total = buy + sell;
+
+  if (!Number.isFinite(total) || total <= 0) {
+    return {
+      buyVolume: null,
+      sellVolume: null,
+      buyRatio: null,
+      sellRatio: null,
+      bias: "unknown"
+    };
+  }
+
+  const buyRatio = (buy / total) * 100;
+  const sellRatio = 100 - buyRatio;
+
+  return {
+    buyVolume: buy,
+    sellVolume: sell,
+    buyRatio,
+    sellRatio,
+    bias:
+      Math.abs(buyRatio - sellRatio) < 3
+        ? "neutral"
+        : buyRatio > sellRatio
+          ? "buy"
+          : "sell"
+  };
+}
+
+function parseBrokerFlow(html) {
+  const $ = cheerio.load(html);
+  const pageText = compactText($("body").text());
+
+  if (!pageText.includes("매도상위") || !pageText.includes("매수상위")) {
+    return normalizeRatioParts(0, 0);
+  }
+
+  let sellVolume = 0;
+  let buyVolume = 0;
+
+  $("tr").each((_, row) => {
+    const cells = $(row)
+      .find("td,th")
+      .map((__, cell) => compactText($(cell).text()))
+      .get()
+      .filter(Boolean);
+
+    if (cells.length < 4) return;
+
+    const rowText = cells.join(" ");
+    if (/날짜|종가|전일비|등락률|거래량/.test(rowText)) return;
+
+    const brokerPairs = [];
+    for (let index = 0; index < cells.length - 1; index += 1) {
+      const label = cells[index];
+      const quantity = parseNumber(cells[index + 1]);
+      const looksLikeBroker = /[가-힣A-Za-z]/.test(label) && !/^\d/.test(label);
+      if (looksLikeBroker && quantity > 0) brokerPairs.push(quantity);
+    }
+
+    if (brokerPairs.length >= 2) {
+      sellVolume += brokerPairs[0];
+      buyVolume += brokerPairs[1];
+    }
+  });
+
+  return normalizeRatioParts(buyVolume, sellVolume);
+}
+
+function parseInvestorFlow(html) {
+  const $ = cheerio.load(html);
+  let latest = null;
+
+  $("tr").each((_, row) => {
+    if (latest) return;
+
+    const cells = $(row)
+      .find("td")
+      .map((__, cell) => compactText($(cell).text()))
+      .get()
+      .filter(Boolean);
+
+    if (cells.length < 7 || !/^\d{4}\.\d{2}\.\d{2}/.test(cells[0])) return;
+
+    latest = {
+      date: cells[0],
+      institutionNetVolume: parseNumber(cells[5]),
+      foreignNetVolume: parseNumber(cells[6]),
+      foreignHoldingShares: cells.length > 7 ? parseNumber(cells[7]) : null,
+      foreignHoldingRate: cells.length > 8 ? parsePercent(cells[8]) : null
+    };
+  });
+
+  return (
+    latest || {
+      date: null,
+      institutionNetVolume: null,
+      foreignNetVolume: null,
+      foreignHoldingShares: null,
+      foreignHoldingRate: null
+    }
+  );
+}
+
+async function getStockFlow(code) {
+  const cached = stockFlowCache.get(code);
+  if (cached?.data && cached.expiresAt > Date.now()) return cached.data;
+  if (cached?.promise) return cached.promise;
+
+  const promise = Promise.allSettled([
+    fetchHtml(`/item/main.naver?code=${code}`),
+    fetchHtml(`/item/frgn.naver?code=${code}`)
+  ])
+    .then(([mainResult, foreignResult]) => {
+      const brokerFlow =
+        mainResult.status === "fulfilled"
+          ? parseBrokerFlow(mainResult.value)
+          : normalizeRatioParts(0, 0);
+      const investorFlow =
+        foreignResult.status === "fulfilled"
+          ? parseInvestorFlow(foreignResult.value)
+          : {
+              date: null,
+              institutionNetVolume: null,
+              foreignNetVolume: null,
+              foreignHoldingShares: null,
+              foreignHoldingRate: null
+            };
+
+      const data = {
+        ...brokerFlow,
+        ...investorFlow,
+        source: "Naver Finance",
+        updatedAt: new Date().toISOString()
+      };
+
+      stockFlowCache.set(code, {
+        data,
+        expiresAt: Date.now() + STOCK_FLOW_CACHE_MS,
+        promise: null
+      });
+      return data;
+    })
+    .catch((error) => {
+      const fallback = {
+        buyVolume: null,
+        sellVolume: null,
+        buyRatio: null,
+        sellRatio: null,
+        bias: "unknown",
+        foreignNetVolume: null,
+        institutionNetVolume: null,
+        foreignHoldingRate: null,
+        source: "Naver Finance",
+        error: error.message,
+        updatedAt: new Date().toISOString()
+      };
+
+      stockFlowCache.set(code, {
+        data: fallback,
+        expiresAt: Date.now() + Math.min(STOCK_FLOW_CACHE_MS, 15_000),
+        promise: null
+      });
+      return fallback;
+    });
+
+  stockFlowCache.set(code, {
+    data: cached?.data || null,
+    expiresAt: cached?.expiresAt || 0,
+    promise
+  });
+  return promise;
+}
+
+async function enrichStockFlows(detail) {
+  const flowTargets = sortStocksByVolume(detail.stocks || []).slice(0, 12);
+  const flowEntries = await mapLimit(
+    flowTargets,
+    STOCK_FLOW_CONCURRENCY,
+    async (stock) => [stock.code, await getStockFlow(stock.code)]
+  );
+  const flowByCode = new Map(flowEntries);
+
+  const stocks = (detail.stocks || []).map((stock) => {
+    const flow = flowByCode.get(stock.code);
+    return flow ? { ...stock, flow } : stock;
+  });
+
+  return {
+    ...detail,
+    stocks,
+    topStocks: sortStocksByTradingValue(stocks).slice(0, 8),
+    topVolumeStocks: sortStocksByVolume(stocks).slice(0, 8)
+  };
+}
+
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
   const stocks = [];
@@ -227,6 +429,7 @@ async function getSectorDetail(sector, options = false) {
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
     .then((html) => parseSectorDetail(html, sector))
+    .then((data) => enrichStockFlows(data))
     .then((data) => {
       detailCache.set(cacheKey, { data, expiresAt: Date.now() + DETAIL_CACHE_MS, promise: null });
       return data;
@@ -391,6 +594,7 @@ app.get("/api/provider", (_, response) => {
     market: "Naver Finance",
     sectorDetail: "Naver Finance",
     volumeProfile: "Naver Finance day-volume only",
+    stockFlow: "Naver Finance broker flow and foreign net flow when available",
     kis: { configured: false, enabled: false }
   });
 });

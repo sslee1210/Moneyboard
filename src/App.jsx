@@ -149,6 +149,22 @@ function formatPercent(value = 0) {
   return `${sign}${percentFormatter.format(value || 0)}%`;
 }
 
+function formatRatio(value) {
+  if (!Number.isFinite(value)) return "-";
+  return `${percentFormatter.format(value)}%`;
+}
+
+function flowClass(flow) {
+  if (!flow?.bias || flow.bias === "neutral" || flow.bias === "unknown") {
+    return "neutral";
+  }
+  return flow.bias === "buy" ? "positive" : "negative";
+}
+
+function stockFlow(stock) {
+  return stock?.flow || stock?.supplyFlow || null;
+}
+
 function changeClass(value = 0) {
   if (value > 0) return "positive";
   if (value < 0) return "negative";
@@ -386,6 +402,13 @@ function SectorCard({ sector, selected, maxVolume, onSelect }) {
               ? Math.max(5, ((stock.volume || 0) / maxStockVolume) * 100)
               : 0;
             const stockChangeRate = stock.changeRate || 0;
+            const flow = stockFlow(stock);
+            const hasFlowRatio =
+              Number.isFinite(flow?.buyRatio) && Number.isFinite(flow?.sellRatio);
+            const buyRatio = hasFlowRatio ? flow.buyRatio : 50;
+            const sellRatio = hasFlowRatio ? flow.sellRatio : 50;
+            const foreignNetVolume = flow?.foreignNetVolume;
+            const hasForeignFlow = Number.isFinite(foreignNetVolume);
 
             return (
               <div className="sector-stock-row" key={stock.code}>
@@ -407,6 +430,24 @@ function SectorCard({ sector, selected, maxVolume, onSelect }) {
                   </span>
                   <span className="sector-stock-volume-bar">
                     <i style={{ width: `${stockVolumeWidth}%` }} />
+                  </span>
+                  <span className="sector-stock-flow">
+                    <span className="sector-stock-flow-head">
+                      <em>매수 {hasFlowRatio ? formatRatio(flow.buyRatio) : "대기"}</em>
+                      <em>매도 {hasFlowRatio ? formatRatio(flow.sellRatio) : "대기"}</em>
+                    </span>
+                    <span className={`sector-stock-flow-bar ${flowClass(flow)}`}>
+                      <i className="buy" style={{ width: `${buyRatio}%` }} />
+                      <i className="sell" style={{ width: `${sellRatio}%` }} />
+                    </span>
+                    <span className="sector-stock-foreign">
+                      <em>외국인</em>
+                      <strong
+                        className={hasForeignFlow ? changeClass(foreignNetVolume) : "neutral"}
+                      >
+                        {hasForeignFlow ? formatVolume(foreignNetVolume) : "수집 대기"}
+                      </strong>
+                    </span>
                   </span>
                 </span>
               </div>
