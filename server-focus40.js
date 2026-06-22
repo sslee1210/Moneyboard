@@ -19,14 +19,14 @@ import {
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
-const STREAM_PUSH_MS = Number(process.env.STREAM_PUSH_MS || 5_000);
-const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
+const STREAM_PUSH_MS = Number(process.env.STREAM_PUSH_MS || 3_000);
+const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 15_000);
 const OVERVIEW_CACHE_MS = Number(process.env.OVERVIEW_CACHE_MS || 5_000);
 const STOCK_CODE_PATTERN = /^\d{6}$/;
 const FOCUS_SECTOR_COUNT = Math.max(1, Number(process.env.KIS_FOCUS_SECTORS || 8));
 const FOCUS_STOCKS_PER_SECTOR = Math.max(1, Number(process.env.KIS_FOCUS_STOCKS_PER_SECTOR || 5));
 const FOCUS_MAX_CODES = Math.max(1, Number(process.env.KIS_FOCUS_MAX_CODES || 40));
-const BACKFILL_INTERVAL_MS = Math.max(1_000, Number(process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || 1_500));
+const BACKFILL_INTERVAL_MS = Math.max(1_000, Number(process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || 2_000));
 const RATE_LIMIT_COOLDOWN_MS = Math.max(5_000, Number(process.env.KIS_RATE_LIMIT_COOLDOWN_MS || 15_000));
 
 const __filename = fileURLToPath(import.meta.url);
@@ -39,6 +39,7 @@ let snapshotPromise = null;
 let lastFocusCodes = [];
 let lastFocusUpdatedAt = null;
 let backfillTimer = null;
+let backfillKickTimer = null;
 let cooldownUntil = 0;
 
 const restQuotes = new Map();
@@ -83,16 +84,19 @@ function isRateLimitError(error) {
   return /초당|거래건수|rate|limit|too many/i.test(message);
 }
 
+function sameCodeList(left = [], right = []) {
+  if (left.length !== right.length) return false;
+  return left.every((code, index) => code === right[index]);
+}
+
 function focusCodesFromSnapshot(snapshot) {
   const codes = [];
   const seen = new Set();
   const sectors = sortSectorsByTradingValue(snapshot?.sectors || []).slice(0, FOCUS_SECTOR_COUNT);
-
   for (const sector of sectors) {
     const stocks = sortStocksByTradingValue(sector.stocks || [])
       .filter((stock) => isValidStockCode(stock?.code))
       .slice(0, FOCUS_STOCKS_PER_SECTOR);
-
     for (const stock of stocks) {
       const code = String(stock.code);
       if (seen.has(code)) continue;
@@ -101,28 +105,41 @@ function focusCodesFromSnapshot(snapshot) {
       if (codes.length >= FOCUS_MAX_CODES) return codes;
     }
   }
-
   return codes;
 }
 
+function scheduleBackfillKick() {
+  if (backfillKickTimer || backfill.inFlight > 0 || Date.now() < cooldownUntil) return;
+  backfillKickTimer = setTimeout(() => {
+    backfillKickTimer = null;
+    void runBackfillStep();
+  }, 250);
+}
+
 function enqueueFocusCodes(codes) {
+  let added = 0;
   for (const code of codes) {
-    if (restQuotes.has(code) || pendingSet.has(code)) continue;
+    if (restQuotes.has(code) || restErrors.has(code) || pendingSet.has(code)) continue;
     pendingCodes.push(code);
     pendingSet.add(code);
+    added += 1;
   }
   backfill.universeSize = codes.length;
   backfill.pendingSize = pendingCodes.length;
+  if (added > 0) backfill.completedOnce = false;
   if (!backfillTimer) backfillTimer = setInterval(runBackfillStep, BACKFILL_INTERVAL_MS);
-  void runBackfillStep();
+  if (added > 0) scheduleBackfillKick();
 }
 
 function primeFocus(snapshot) {
   const codes = focusCodesFromSnapshot(snapshot);
-  lastFocusCodes = codes;
-  lastFocusUpdatedAt = new Date().toISOString();
+  const changed = !sameCodeList(codes, lastFocusCodes);
+  if (changed) {
+    lastFocusCodes = codes;
+    lastFocusUpdatedAt = new Date().toISOString();
+    void subscribeRealtimeCodes(codes);
+  }
   enqueueFocusCodes(codes);
-  void subscribeRealtimeCodes(codes);
 }
 
 async function runBackfillStep() {
@@ -137,7 +154,7 @@ async function runBackfillStep() {
 
   try {
     backfill.requestCount += 1;
-    const quote = await fetchKisQuote(code, { force: true });
+    const quote = await fetchKisQuote(code, { force: false });
     restQuotes.set(code, quote);
     restErrors.delete(code);
     backfill.successCount += 1;
@@ -145,12 +162,11 @@ async function runBackfillStep() {
   } catch (error) {
     backfill.lastError = error.message;
     backfill.lastErrorAt = new Date().toISOString();
-
     if (isRateLimitError(error)) {
       backfill.rateLimitCount += 1;
       cooldownUntil = Date.now() + RATE_LIMIT_COOLDOWN_MS;
       if (!pendingSet.has(code) && !restQuotes.has(code)) {
-        pendingCodes.unshift(code);
+        pendingCodes.push(code);
         pendingSet.add(code);
       }
     } else {
@@ -204,7 +220,7 @@ function applyRestQuote(stock) {
     tradingValueValidation: {
       ...(stock.tradingValueValidation || {}),
       status: "kis-verified",
-      source: "KIS Open API REST focus-40",
+      source: "KIS REST focus-40",
       updatedAt: quote.updatedAt
     }
   };
@@ -213,7 +229,6 @@ function applyRestQuote(stock) {
 function normalizeStock(rawStock) {
   const code = String(rawStock?.code || "");
   if (!isValidStockCode(code)) return { stock: null, reason: "invalid-code" };
-
   const withRealtime = applyRealtimeQuoteToStock(rawStock);
   const withRest = applyRestQuote(withRealtime);
   const hasRealtime = withRest?.kisRealtimeQuote && quoteTradeAmount(withRest.kisRealtimeQuote) > 0;
@@ -267,7 +282,6 @@ function sanitizeStocks(stocks = []) {
   const invalid = [];
   const pending = [];
   const duplicates = [];
-
   for (const raw of stocks) {
     const normalized = normalizeStock(raw);
     if (!normalized.stock) {
@@ -282,7 +296,6 @@ function sanitizeStocks(stocks = []) {
     if (normalized.reason === "pending") pending.push(normalized.stock);
     clean.push(normalized.stock);
   }
-
   return { stocks: sortStocksByTradingValue(clean), invalid, pending, duplicates };
 }
 
@@ -310,7 +323,6 @@ function recalculateSector(sector) {
   const volume = apiReadyStocks.reduce((sum, stock) => sum + (stock.volume || 0), 0);
   const validationStatusCounts = countByStatus(stocks);
   const stockOrderErrorCount = countOrderErrors(apiReadyStocks, "tradeAmountMillion");
-
   return {
     ...sector,
     stockCount: stocks.length,
@@ -362,7 +374,6 @@ function buildTotals(sectors = []) {
 
 function sanitizeSnapshot(snapshot) {
   primeFocus(snapshot);
-
   const sectors = sortSectorsByTradingValue((snapshot.sectors || []).map(recalculateSector)).map((sector, index) => ({
     ...sector,
     rank: index + 1
@@ -370,7 +381,6 @@ function sanitizeSnapshot(snapshot) {
   const validation = buildSnapshotValidation(sectors);
   const totals = buildTotals(sectors);
   const orderErrorCount = validation.stockOrderErrorCount || 0;
-
   return {
     ...snapshot,
     mode: "localhost-focus40-kis",
@@ -403,7 +413,6 @@ async function buildFocusSnapshot(force = false) {
     return lastSnapshot;
   }
   if (!force && snapshotPromise) return snapshotPromise;
-
   snapshotPromise = getMarketSnapshot(force)
     .then((snapshot) => {
       lastRawSnapshot = snapshot;
@@ -523,19 +532,16 @@ app.get("/api/stream", async (request, response) => {
   response.setHeader("cache-control", "no-cache, no-transform");
   response.setHeader("connection", "keep-alive");
   response.flushHeaders?.();
-
   let closed = false;
   let sending = false;
   request.on("close", () => {
     closed = true;
   });
-
   const writeMarket = (snapshot) => {
     if (closed) return;
     response.write("event: market\n");
     response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
   };
-
   const send = async () => {
     if (closed || sending) return;
     sending = true;
@@ -548,7 +554,6 @@ app.get("/api/stream", async (request, response) => {
       sending = false;
     }
   };
-
   writeMarket(lastSnapshot || bootstrapSnapshot());
   void send();
   const interval = setInterval(send, STREAM_PUSH_MS);
@@ -559,7 +564,6 @@ app.use(express.static(path.join(__dirname, "dist")));
 app.get(/.*/, (_request, response) => response.sendFile(path.join(__dirname, "dist", "index.html")));
 
 startKisRealtime();
-
 app.listen(PORT, () => {
   console.log(`Moneyboard focus-40 local server listening on http://localhost:${PORT}`);
   console.log("Provider: KIS REST/WebSocket focus-40 numeric fields + Naver stock list");
