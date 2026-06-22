@@ -12,10 +12,10 @@
 
 [https://sslee1210.github.io/Moneyboard/](https://sslee1210.github.io/Moneyboard/)
 
-GitHub Pages는 정적 호스팅이라 브라우저에서 네이버 금융 데이터를 직접 실시간 호출하기 어렵습니다. 대신 GitHub Actions가 평일 장중에 주기적으로 데이터를 다시 생성해 `gh-pages`에 배포하고, 화면은 배포된 `data/*.json`을 자동으로 다시 읽습니다.
+GitHub Pages는 정적 호스팅이라 자체 서버를 실행할 수 없습니다. 그래서 공개 화면은 브라우저에서 네이버 금융 리더 경로를 우선 호출해 실시간 수집을 시도하고, 수집이 끝나는 즉시 다음 수집을 시작합니다. 라이브 수집이 막히거나 지연될 때만 배포된 `data/*.json` 스냅샷을 백업으로 보여줍니다.
 
-- 장중 자동 갱신: 평일 09:00-16:00 KST 구간 약 5분 간격
-- 장 마감 스냅샷: 평일 17:05 KST 1회
+- 화면 갱신: 라이브 수집 성공 시 대기 없이 다음 수집 시작
+- 백업 스냅샷: GitHub Actions가 평일 장중 주기적으로 생성
 - 수동 갱신: GitHub Actions의 `Refresh Moneyboard Pages` 워크플로 실행
 
 ## 로컬 실행

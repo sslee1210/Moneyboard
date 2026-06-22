@@ -36,7 +36,8 @@ const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port) && !window.location.hostname.endsWith("github.io");
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
 const apiFallbackPollMs = 30_000;
-const pagesStaticPollMs = 15_000;
+const pagesLiveSuccessDelayMs = 0;
+const pagesLiveFailureRetryMs = 15_000;
 const volumePeriods = [
   { id: "day", label: "일일" },
   { id: "week", label: "주간" },
@@ -159,19 +160,31 @@ function useMarketStream() {
     let fallbackTimer;
     let fallbackLoopStarted = false;
 
-    const loadPagesSnapshot = async () => {
+    const loadPagesLiveSnapshot = async () => {
       try {
-        const data = await loadStaticMarket();
+        const data = await loadLiveMarket({ forceReader: true });
         if (!closed) {
           setSnapshot(data);
-          setStreamState("polling");
-          setError("GitHub Pages 자동 갱신");
+          setStreamState("live");
+          setError("");
         }
-      } catch (staticError) {
-        if (!closed) {
-          setStreamState("offline");
-          setError(staticError.message);
+        return pagesLiveSuccessDelayMs;
+      } catch (liveError) {
+        try {
+          const data = await loadStaticMarket();
+          if (!closed) {
+            setSnapshot(data);
+            setStreamState("polling");
+            setError(`실시간 수집 재시도 중: ${liveError.message}`);
+          }
+        } catch (staticError) {
+          if (!closed) {
+            setStreamState("offline");
+            setError(staticError.message || liveError.message);
+          }
         }
+
+        return pagesLiveFailureRetryMs;
       }
     };
 
@@ -228,10 +241,12 @@ function useMarketStream() {
     };
 
     if (!canUseApi) {
+      loadStaticPreview();
+
       const run = async () => {
-        await loadPagesSnapshot();
+        const nextDelayMs = await loadPagesLiveSnapshot();
         if (!closed) {
-          fallbackTimer = window.setTimeout(run, pagesStaticPollMs);
+          fallbackTimer = window.setTimeout(run, nextDelayMs);
         }
       };
 
@@ -550,8 +565,9 @@ export default function App() {
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const data = canUseApi ? await loadLiveSector(selectedSector) : await loadStaticSector(selectedSector.id);
+        const data = await loadLiveSector(selectedSector, { forceReader: !canUseApi });
         if (!cancelled) setSectorDetail(data);
+        return canUseApi ? apiFallbackPollMs : pagesLiveSuccessDelayMs;
       } catch {
         try {
           const data = await loadStaticSector(selectedSector.id);
@@ -559,15 +575,17 @@ export default function App() {
         } catch {
           if (!cancelled) setSectorDetail(null);
         }
+
+        return canUseApi ? apiFallbackPollMs : pagesLiveFailureRetryMs;
       } finally {
         if (!cancelled) setDetailLoading(false);
       }
     }
 
     const run = async () => {
-      await loadDetail();
+      const nextDelayMs = await loadDetail();
       if (!cancelled) {
-        timer = window.setTimeout(run, canUseApi ? apiFallbackPollMs : pagesStaticPollMs);
+        timer = window.setTimeout(run, nextDelayMs);
       }
     };
 
@@ -576,7 +594,7 @@ export default function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [selectedSector?.id, snapshot?.updatedAt, streamState]);
+  }, [selectedSector?.id]);
 
   useEffect(() => {
     if (!volumeProfileKey || !sectorDetail?.stocks?.length) {
@@ -593,10 +611,8 @@ export default function App() {
       try {
         if (!cancelled) setVolumeProfile(staticProfile);
 
-        if (!canUseApi) return;
-
         const data = await loadReaderVolumeProfile(sectorDetail.stocks, {
-          force: false,
+          force: !canUseApi,
           limit: volumeHistoryLimit
         });
         const staticCoverage = (staticProfile?.counts?.week || 0) + (staticProfile?.counts?.month || 0);
