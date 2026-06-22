@@ -18,10 +18,10 @@ const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 8_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 4);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
-// Parsed 거래대금 must roughly match 현재가 × 거래량. If not, the parsed value
-// is treated as a wrong-column parse and repaired before ranking.
-const TRADE_VALUE_MIN_RATIO = Number(process.env.TRADE_VALUE_MIN_RATIO || 0.35);
-const TRADE_VALUE_MAX_RATIO = Number(process.env.TRADE_VALUE_MAX_RATIO || 2.75);
+// Parsed 거래대금 must be internally consistent with 현재가 × 거래량. If not,
+// the parser treats it as a wrong-column read and uses a verified fallback.
+const TRADE_VALUE_MIN_RATIO = Number(process.env.TRADE_VALUE_MIN_RATIO || 0.55);
+const TRADE_VALUE_MAX_RATIO = Number(process.env.TRADE_VALUE_MAX_RATIO || 1.85);
 
 const OVERVIEW_INSTRUMENTS = [
   { id: "kospi", label: "코스피", symbol: "^KS11", provider: "Yahoo Finance" },
@@ -306,6 +306,20 @@ function headerIndex(headers, matcher) {
   return index >= 0 ? index : null;
 }
 
+function alignedHeaderIndex(headers, cells, matcher, nameIndex = 0) {
+  const index = headerIndex(headers, matcher);
+  if (index === null) return null;
+
+  const nameHeaderIndex = headerIndex(headers, (header) => /종목/.test(header));
+  if (nameHeaderIndex !== null) {
+    const aligned = index - nameHeaderIndex + nameIndex;
+    if (aligned >= 0 && aligned < cells.length) return aligned;
+  }
+
+  if (index >= 0 && index < cells.length) return index;
+  return null;
+}
+
 function cellAt(cells, index) {
   if (index === null || index === undefined || index < 0 || index >= cells.length) return "";
   return cells[index];
@@ -316,61 +330,125 @@ function estimateTradeAmountMillion(price, volume) {
   return Number.isFinite(estimate) && estimate > 0 ? estimate : 0;
 }
 
-function normalizeTradingValue(stock, metadata = {}) {
-  const rawTradeAmountMillion = Number(stock.tradeAmountMillion || 0);
-  const estimatedTradeAmountMillion = estimateTradeAmountMillion(stock.price, stock.volume);
+function validationRatio(value, estimate) {
+  if (!Number.isFinite(value) || value <= 0 || !Number.isFinite(estimate) || estimate <= 0) return null;
+  return value / estimate;
+}
 
-  if (!estimatedTradeAmountMillion && !rawTradeAmountMillion) {
+function isTradeAmountRatioValid(ratio) {
+  return ratio !== null && ratio >= TRADE_VALUE_MIN_RATIO && ratio <= TRADE_VALUE_MAX_RATIO;
+}
+
+function chooseVerifiedTradeAmountMillion({ cells, preferredIndex, price, volume, volumeIndex }) {
+  const rawTradeAmountMillion = parseNumber(cellAt(cells, preferredIndex));
+  const estimatedTradeAmountMillion = estimateTradeAmountMillion(price, volume);
+  const rawRatio = validationRatio(rawTradeAmountMillion, estimatedTradeAmountMillion);
+
+  if (rawTradeAmountMillion > 0 && isTradeAmountRatioValid(rawRatio)) {
     return {
-      ...stock,
+      tradeAmountMillion: rawTradeAmountMillion,
       rawTradeAmountMillion,
       estimatedTradeAmountMillion,
-      tradeAmountMillion: 0,
-      tradingValueValidation: {
-        status: "unverified",
-        ratio: null,
-        ...metadata
-      }
+      status: "parsed-header",
+      ratio: rawRatio,
+      tradeAmountColumn: preferredIndex
     };
   }
 
-  if (!rawTradeAmountMillion && estimatedTradeAmountMillion) {
+  const candidates = cells
+    .map((text, index) => {
+      const value = parseNumber(text);
+      const ratio = validationRatio(value, estimatedTradeAmountMillion);
+      return { index, value, ratio };
+    })
+    .filter(
+      (candidate) =>
+        candidate.value > 0 &&
+        candidate.index !== volumeIndex &&
+        candidate.index > (volumeIndex ?? -1) &&
+        isTradeAmountRatioValid(candidate.ratio)
+    )
+    .sort((left, right) => Math.abs(Math.log(left.ratio)) - Math.abs(Math.log(right.ratio)));
+
+  if (candidates.length) {
+    const best = candidates[0];
     return {
-      ...stock,
+      tradeAmountMillion: best.value,
       rawTradeAmountMillion,
       estimatedTradeAmountMillion,
+      status: preferredIndex === best.index ? "parsed-header" : "parsed-candidate",
+      ratio: best.ratio,
+      tradeAmountColumn: best.index,
+      preferredTradeAmountColumn: preferredIndex
+    };
+  }
+
+  if (estimatedTradeAmountMillion > 0) {
+    return {
       tradeAmountMillion: estimatedTradeAmountMillion,
-      tradingValueValidation: {
-        status: "derived-price-volume",
-        ratio: null,
-        ...metadata
-      }
+      rawTradeAmountMillion,
+      estimatedTradeAmountMillion,
+      status: rawTradeAmountMillion > 0 ? "repaired-price-volume" : "derived-price-volume",
+      ratio: rawRatio,
+      tradeAmountColumn: preferredIndex
     };
   }
 
-  const ratio = estimatedTradeAmountMillion ? rawTradeAmountMillion / estimatedTradeAmountMillion : null;
-  const parsedLooksValid =
-    rawTradeAmountMillion > 0 &&
-    (!estimatedTradeAmountMillion || (ratio >= TRADE_VALUE_MIN_RATIO && ratio <= TRADE_VALUE_MAX_RATIO));
+  return {
+    tradeAmountMillion: 0,
+    rawTradeAmountMillion,
+    estimatedTradeAmountMillion,
+    status: "unverified",
+    ratio: rawRatio,
+    tradeAmountColumn: preferredIndex
+  };
+}
+
+function normalizeTradingValue(stock, metadata = {}) {
+  const verified = chooseVerifiedTradeAmountMillion({
+    cells: metadata.cells || [],
+    preferredIndex: metadata.tradeAmountColumn,
+    price: stock.price,
+    volume: stock.volume,
+    volumeIndex: metadata.volumeColumn
+  });
 
   return {
     ...stock,
-    rawTradeAmountMillion,
-    estimatedTradeAmountMillion,
-    tradeAmountMillion: parsedLooksValid ? rawTradeAmountMillion : estimatedTradeAmountMillion,
+    rawTradeAmountMillion: verified.rawTradeAmountMillion,
+    estimatedTradeAmountMillion: verified.estimatedTradeAmountMillion,
+    tradeAmountMillion: verified.tradeAmountMillion,
     tradingValueValidation: {
-      status: parsedLooksValid ? "parsed" : "repaired-price-volume",
-      ratio,
-      ...metadata
+      status: verified.status,
+      ratio: verified.ratio,
+      priceColumn: metadata.priceColumn,
+      volumeColumn: metadata.volumeColumn,
+      tradeAmountColumn: verified.tradeAmountColumn,
+      preferredTradeAmountColumn: verified.preferredTradeAmountColumn ?? metadata.tradeAmountColumn,
+      headers: metadata.headers || []
     }
   };
+}
+
+function countByValidationStatus(stocks) {
+  return stocks.reduce((acc, stock) => {
+    const status = stock.tradingValueValidation?.status || "unknown";
+    acc[status] = (acc[status] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function countOrderErrors(items, field) {
+  let errors = 0;
+  for (let index = 1; index < items.length; index += 1) {
+    if ((items[index - 1]?.[field] || 0) < (items[index]?.[field] || 0)) errors += 1;
+  }
+  return errors;
 }
 
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
   const rawStocks = [];
-  let repairedTradeAmountCount = 0;
-  let unverifiedTradeAmountCount = 0;
 
   $("td.name").each((_, nameCell) => {
     const row = $(nameCell).closest("tr");
@@ -387,16 +465,18 @@ function parseSectorDetail(html, sector) {
 
     if (!code || !name || cells.length < 5) return;
 
-    const priceIndex = headerIndex(headers, (header) => header.includes("현재가")) ?? nameIndex + 1;
-    const changeAmountIndex = headerIndex(headers, (header) => header === "전일비") ?? nameIndex + 2;
-    const changeRateIndex = headerIndex(headers, (header) => header.includes("등락률")) ?? nameIndex + 3;
+    const priceIndex = alignedHeaderIndex(headers, cells, (header) => header.includes("현재가"), nameIndex) ?? nameIndex + 1;
+    const changeAmountIndex =
+      alignedHeaderIndex(headers, cells, (header) => header === "전일비", nameIndex) ?? nameIndex + 2;
+    const changeRateIndex =
+      alignedHeaderIndex(headers, cells, (header) => header.includes("등락률"), nameIndex) ?? nameIndex + 3;
     const volumeIndex =
-      headerIndex(headers, (header) => header === "거래량") ??
-      headerIndex(headers, (header) => header.includes("거래량") && !header.includes("전일")) ??
+      alignedHeaderIndex(headers, cells, (header) => header === "거래량", nameIndex) ??
+      alignedHeaderIndex(headers, cells, (header) => header.includes("거래량") && !header.includes("전일"), nameIndex) ??
       nameIndex + 4;
-    const tradeAmountIndex = headerIndex(headers, (header) => header.includes("거래대금"));
-    const marketCapIndex = headerIndex(headers, (header) => header.includes("시가총액"));
-    const marketIndex = headerIndex(headers, (header) => header === "시장" || header.includes("시장구분"));
+    const preferredTradeAmountIndex = alignedHeaderIndex(headers, cells, (header) => header.includes("거래대금"), nameIndex);
+    const marketCapIndex = alignedHeaderIndex(headers, cells, (header) => header.includes("시가총액"), nameIndex);
+    const marketIndex = alignedHeaderIndex(headers, cells, (header) => header === "시장" || header.includes("시장구분"), nameIndex);
 
     const parsed = normalizeTradingValue(
       {
@@ -406,21 +486,18 @@ function parseSectorDetail(html, sector) {
         changeAmount: parseNumber(cellAt(cells, changeAmountIndex)),
         changeRate: parsePercent(cellAt(cells, changeRateIndex)),
         volume: parseNumber(cellAt(cells, volumeIndex)),
-        tradeAmountMillion: parseNumber(cellAt(cells, tradeAmountIndex)),
         marketCapMillion: parseNumber(cellAt(cells, marketCapIndex)),
         market: compactText(cellAt(cells, marketIndex)) || "-",
         naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
       },
       {
+        cells,
         priceColumn: priceIndex,
         volumeColumn: volumeIndex,
-        tradeAmountColumn: tradeAmountIndex,
+        tradeAmountColumn: preferredTradeAmountIndex,
         headers
       }
     );
-
-    if (parsed.tradingValueValidation.status === "repaired-price-volume") repairedTradeAmountCount += 1;
-    if (parsed.tradingValueValidation.status === "unverified") unverifiedTradeAmountCount += 1;
 
     rawStocks.push(parsed);
   });
@@ -435,13 +512,21 @@ function parseSectorDetail(html, sector) {
       ? stocks.reduce((sum, stock) => sum + (stock.changeRate || 0) * (stock.tradeAmountMillion || 0), 0) /
         tradingValueMillion
       : sector.changeRate;
+  const validationStatusCounts = countByValidationStatus(stocks);
+  const repairedTradeAmountCount =
+    (validationStatusCounts["repaired-price-volume"] || 0) + (validationStatusCounts["parsed-candidate"] || 0);
+  const derivedTradeAmountCount = validationStatusCounts["derived-price-volume"] || 0;
+  const unverifiedTradeAmountCount = validationStatusCounts.unverified || 0;
+  const stockOrderErrorCount = countOrderErrors(tradingValueStocks, "tradeAmountMillion");
 
   return {
     ...sector,
     stockCount: stocks.length,
     excludedEtfEtnCount: rawStocks.length - stocks.length,
     repairedTradeAmountCount,
+    derivedTradeAmountCount,
     unverifiedTradeAmountCount,
+    validationStatusCounts,
     tradingValueMillion,
     volume,
     weightedChangeRate,
@@ -450,10 +535,14 @@ function parseSectorDetail(html, sector) {
     topTradingValueStocks: tradingValueStocks.slice(0, 8),
     topVolumeStocks: volumeStocks.slice(0, 8),
     validation: {
+      status: unverifiedTradeAmountCount === 0 && stockOrderErrorCount === 0 ? "ok" : "warning",
       source: "Naver Finance sector detail",
-      method: "header-aware parser + price-volume sanity check",
+      method: "header-aligned parser + candidate-column validation + price-volume fallback",
       repairedTradeAmountCount,
+      derivedTradeAmountCount,
       unverifiedTradeAmountCount,
+      stockOrderErrorCount,
+      validationStatusCounts,
       thresholds: {
         minRatio: TRADE_VALUE_MIN_RATIO,
         maxRatio: TRADE_VALUE_MAX_RATIO
@@ -519,6 +608,53 @@ function sortSectorsByTradingValue(sectors = []) {
   });
 }
 
+function buildSnapshotValidation(rankedSectors) {
+  const sectorOrderErrorCount = countOrderErrors(rankedSectors, "tradingValueMillion");
+  let stockOrderErrorCount = 0;
+  let unverifiedTradeAmountCount = 0;
+  let repairedTradeAmountCount = 0;
+  let derivedTradeAmountCount = 0;
+  let duplicateStockCount = 0;
+  const seenCodes = new Set();
+  const validationStatusCounts = {};
+
+  for (const sector of rankedSectors) {
+    stockOrderErrorCount += sector.validation?.stockOrderErrorCount || countOrderErrors(sector.stocks || [], "tradeAmountMillion");
+    unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
+    repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
+    derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
+
+    for (const [status, count] of Object.entries(sector.validationStatusCounts || {})) {
+      validationStatusCounts[status] = (validationStatusCounts[status] || 0) + count;
+    }
+
+    for (const stock of sector.stocks || []) {
+      if (seenCodes.has(stock.code)) duplicateStockCount += 1;
+      seenCodes.add(stock.code);
+    }
+  }
+
+  const errorCount = sectorOrderErrorCount + stockOrderErrorCount + unverifiedTradeAmountCount;
+
+  return {
+    status: errorCount === 0 ? "ok" : "warning",
+    errorCount,
+    sectorOrderErrorCount,
+    stockOrderErrorCount,
+    unverifiedTradeAmountCount,
+    repairedTradeAmountCount,
+    derivedTradeAmountCount,
+    duplicateStockCount,
+    validationStatusCounts,
+    method: "header-aligned parser + candidate-column validation + price-volume fallback",
+    invariant: "Displayed sectors and stocks are sorted by validated daily trading value in descending order.",
+    thresholds: {
+      minRatio: TRADE_VALUE_MIN_RATIO,
+      maxRatio: TRADE_VALUE_MAX_RATIO
+    }
+  };
+}
+
 async function buildMarketSnapshot(force = false) {
   if (!force && marketCache.data && marketCache.expiresAt > Date.now()) return marketCache.data;
   if (!force && marketCache.promise) return marketCache.promise;
@@ -542,8 +678,10 @@ async function buildMarketSnapshot(force = false) {
               topVolumeStocks: [],
               excludedEtfEtnCount: 0,
               repairedTradeAmountCount: 0,
+              derivedTradeAmountCount: 0,
               unverifiedTradeAmountCount: 1,
-              validation: { error: error.message },
+              validationStatusCounts: { unverified: 1 },
+              validation: { status: "error", error: error.message },
               error: error.message
             };
           }
@@ -555,6 +693,7 @@ async function buildMarketSnapshot(force = false) {
         ...sector,
         rank: index + 1
       }));
+      const validation = buildSnapshotValidation(rankedSectors);
 
       const totals = rankedSectors.reduce(
         (acc, sector) => {
@@ -563,6 +702,7 @@ async function buildMarketSnapshot(force = false) {
           acc.stockCount += sector.stockCount || 0;
           acc.excludedEtfEtnCount += sector.excludedEtfEtnCount || 0;
           acc.repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
+          acc.derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
           acc.unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
           acc.breadth.rising += sector.risingCount || 0;
           acc.breadth.flat += sector.flatCount || 0;
@@ -576,6 +716,7 @@ async function buildMarketSnapshot(force = false) {
           sectorCount: rankedSectors.length,
           excludedEtfEtnCount: 0,
           repairedTradeAmountCount: 0,
+          derivedTradeAmountCount: 0,
           unverifiedTradeAmountCount: 0,
           breadth: { rising: 0, flat: 0, falling: 0 }
         }
@@ -585,8 +726,8 @@ async function buildMarketSnapshot(force = false) {
         mode: "localhost-live",
         provider: "Naver Finance",
         overviewProvider: "Yahoo Finance",
-        rankingBasis: "daily-trading-value",
-        validationMethod: "header-aware parser + price-volume sanity check",
+        rankingBasis: "validated-daily-trading-value",
+        validationMethod: validation.method,
         excludes: ["ETF", "ETN", "ELW"],
         refreshMs: STREAM_PUSH_MS,
         marketCacheMs: MARKET_CACHE_MS,
@@ -594,6 +735,7 @@ async function buildMarketSnapshot(force = false) {
         updatedAt: new Date().toISOString(),
         overview,
         totals,
+        validation,
         sectors: rankedSectors
       };
     });
@@ -653,12 +795,16 @@ app.get("/api/provider", (_request, response) => {
     provider: "Naver Finance",
     overviewProvider: "Yahoo Finance",
     mode: "localhost-live",
-    rankingBasis: "daily-trading-value",
-    validationMethod: "header-aware parser + price-volume sanity check",
+    rankingBasis: "validated-daily-trading-value",
+    validationMethod: "header-aligned parser + candidate-column validation + price-volume fallback",
     excludes: ["ETF", "ETN", "ELW"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
     overviewCacheMs: OVERVIEW_CACHE_MS,
+    tradeValueRatioThresholds: {
+      min: TRADE_VALUE_MIN_RATIO,
+      max: TRADE_VALUE_MAX_RATIO
+    },
     kis: { configured: false, enabled: false }
   });
 });
@@ -676,6 +822,15 @@ app.get("/api/sectors", async (request, response) => {
     response.json(await buildMarketSnapshot(request.query.force === "1"));
   } catch (error) {
     response.status(502).json({ error: error.message });
+  }
+});
+
+app.get("/api/validation", async (request, response) => {
+  try {
+    const snapshot = await buildMarketSnapshot(request.query.force === "1");
+    response.status(snapshot.validation.status === "ok" ? 200 : 409).json(snapshot.validation);
+  } catch (error) {
+    response.status(502).json({ status: "error", error: error.message });
   }
 });
 
@@ -727,11 +882,29 @@ app.get(/.*/, (_request, response) => {
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
-app.listen(PORT, () => {
-  console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
-  console.log("Provider: Naver Finance only. KIS is disabled.");
-  console.log("Ranking basis: daily trading value. ETF/ETN/ELW excluded.");
-  console.log("Validation: header-aware parser + price-volume sanity check.");
-  console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
-  console.log("Market overview: KOSPI/KOSDAQ/Nasdaq100 futures/USD-KRW/S&P500 via Yahoo Finance.");
-});
+function startServer() {
+  app.listen(PORT, () => {
+    console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
+    console.log("Provider: Naver Finance only. KIS is disabled.");
+    console.log("Ranking basis: validated daily trading value. ETF/ETN/ELW excluded.");
+    console.log("Validation: header-aligned parser + candidate-column validation + price-volume fallback.");
+    console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
+    console.log("Market overview: KOSPI/KOSDAQ/Nasdaq100 futures/USD-KRW/S&P500 via Yahoo Finance.");
+  });
+}
+
+const isCliEntry = process.argv[1] ? path.resolve(process.argv[1]) === __filename : false;
+if (isCliEntry) startServer();
+
+export {
+  app,
+  buildMarketSnapshot as getMarketSnapshot,
+  buildMarketOverview as getMarketOverview,
+  getSectorDetail,
+  parseSectorList,
+  parseSectorDetail,
+  normalizeTradingValue,
+  sortSectorsByTradingValue,
+  sortStocksByTradingValue,
+  buildSnapshotValidation
+};
