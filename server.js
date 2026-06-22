@@ -8,9 +8,8 @@ const app = express();
 const PORT = Number(process.env.PORT || 4173);
 const NAVER_BASE_URL = "https://finance.naver.com";
 
-// Browser receives a new snapshot every second. The server also uses a short
-// cache so repeated refreshes do not hammer the upstream pages when a request
-// is still in flight.
+// Browser receives a new snapshot every second. Upstream pages are cached very
+// briefly so refresh remains fast without stacking duplicate requests.
 const STREAM_PUSH_MS = Number(process.env.STREAM_PUSH_MS || 1_000);
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 1_000);
 const OVERVIEW_CACHE_MS = Number(process.env.OVERVIEW_CACHE_MS || 5_000);
@@ -18,6 +17,11 @@ const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 3_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 8_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 4);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
+
+// Parsed 거래대금 must roughly match 현재가 × 거래량. If not, the parsed value
+// is treated as a wrong-column parse and repaired before ranking.
+const TRADE_VALUE_MIN_RATIO = Number(process.env.TRADE_VALUE_MIN_RATIO || 0.35);
+const TRADE_VALUE_MAX_RATIO = Number(process.env.TRADE_VALUE_MAX_RATIO || 2.75);
 
 const OVERVIEW_INSTRUMENTS = [
   { id: "kospi", label: "코스피", symbol: "^KS11", provider: "Yahoo Finance" },
@@ -114,8 +118,6 @@ async function fetchJsonUrl(url) {
 }
 
 function yahooChartUrl(symbol) {
-  // 1d/5m can return too few points outside active sessions. 5d/30m gives
-  // enough points for a real sparkline while still staying lightweight.
   return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
     symbol
   )}?range=5d&interval=30m&includePrePost=true`;
@@ -288,9 +290,87 @@ function sortStocksByVolume(stocks = []) {
   });
 }
 
+function getTableHeaders($, row) {
+  const table = row.closest("table");
+  return table
+    .find("tr")
+    .filter((_, candidate) => $(candidate).find("th").length > 0)
+    .first()
+    .find("th")
+    .map((_, header) => compactText($(header).text()))
+    .get();
+}
+
+function headerIndex(headers, matcher) {
+  const index = headers.findIndex((header) => matcher(header));
+  return index >= 0 ? index : null;
+}
+
+function cellAt(cells, index) {
+  if (index === null || index === undefined || index < 0 || index >= cells.length) return "";
+  return cells[index];
+}
+
+function estimateTradeAmountMillion(price, volume) {
+  const estimate = (Number(price || 0) * Number(volume || 0)) / 1_000_000;
+  return Number.isFinite(estimate) && estimate > 0 ? estimate : 0;
+}
+
+function normalizeTradingValue(stock, metadata = {}) {
+  const rawTradeAmountMillion = Number(stock.tradeAmountMillion || 0);
+  const estimatedTradeAmountMillion = estimateTradeAmountMillion(stock.price, stock.volume);
+
+  if (!estimatedTradeAmountMillion && !rawTradeAmountMillion) {
+    return {
+      ...stock,
+      rawTradeAmountMillion,
+      estimatedTradeAmountMillion,
+      tradeAmountMillion: 0,
+      tradingValueValidation: {
+        status: "unverified",
+        ratio: null,
+        ...metadata
+      }
+    };
+  }
+
+  if (!rawTradeAmountMillion && estimatedTradeAmountMillion) {
+    return {
+      ...stock,
+      rawTradeAmountMillion,
+      estimatedTradeAmountMillion,
+      tradeAmountMillion: estimatedTradeAmountMillion,
+      tradingValueValidation: {
+        status: "derived-price-volume",
+        ratio: null,
+        ...metadata
+      }
+    };
+  }
+
+  const ratio = estimatedTradeAmountMillion ? rawTradeAmountMillion / estimatedTradeAmountMillion : null;
+  const parsedLooksValid =
+    rawTradeAmountMillion > 0 &&
+    (!estimatedTradeAmountMillion || (ratio >= TRADE_VALUE_MIN_RATIO && ratio <= TRADE_VALUE_MAX_RATIO));
+
+  return {
+    ...stock,
+    rawTradeAmountMillion,
+    estimatedTradeAmountMillion,
+    tradeAmountMillion: parsedLooksValid ? rawTradeAmountMillion : estimatedTradeAmountMillion,
+    tradingValueValidation: {
+      status: parsedLooksValid ? "parsed" : "repaired-price-volume",
+      ratio,
+      ...metadata
+    }
+  };
+}
+
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
   const rawStocks = [];
+  let repairedTradeAmountCount = 0;
+  let unverifiedTradeAmountCount = 0;
 
   $("td.name").each((_, nameCell) => {
     const row = $(nameCell).closest("tr");
@@ -302,21 +382,47 @@ function parseSectorDetail(html, sector) {
     const href = link.attr("href") || "";
     const code = new URL(href, NAVER_BASE_URL).searchParams.get("code");
     const name = compactText(link.text());
+    const headers = getTableHeaders($, row);
+    const nameIndex = row.children("td").index($(nameCell));
 
-    if (!code || !name || cells.length < 9) return;
+    if (!code || !name || cells.length < 5) return;
 
-    rawStocks.push({
-      code,
-      name,
-      price: parseNumber(cells[1]),
-      changeAmount: parseNumber(cells[2]),
-      changeRate: parsePercent(cells[3]),
-      volume: parseNumber(cells[4]),
-      tradeAmountMillion: parseNumber(cells[5]),
-      marketCapMillion: parseNumber(cells[6]),
-      market: compactText(cells[8]) || "-",
-      naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
-    });
+    const priceIndex = headerIndex(headers, (header) => header.includes("현재가")) ?? nameIndex + 1;
+    const changeAmountIndex = headerIndex(headers, (header) => header === "전일비") ?? nameIndex + 2;
+    const changeRateIndex = headerIndex(headers, (header) => header.includes("등락률")) ?? nameIndex + 3;
+    const volumeIndex =
+      headerIndex(headers, (header) => header === "거래량") ??
+      headerIndex(headers, (header) => header.includes("거래량") && !header.includes("전일")) ??
+      nameIndex + 4;
+    const tradeAmountIndex = headerIndex(headers, (header) => header.includes("거래대금"));
+    const marketCapIndex = headerIndex(headers, (header) => header.includes("시가총액"));
+    const marketIndex = headerIndex(headers, (header) => header === "시장" || header.includes("시장구분"));
+
+    const parsed = normalizeTradingValue(
+      {
+        code,
+        name,
+        price: parseNumber(cellAt(cells, priceIndex)),
+        changeAmount: parseNumber(cellAt(cells, changeAmountIndex)),
+        changeRate: parsePercent(cellAt(cells, changeRateIndex)),
+        volume: parseNumber(cellAt(cells, volumeIndex)),
+        tradeAmountMillion: parseNumber(cellAt(cells, tradeAmountIndex)),
+        marketCapMillion: parseNumber(cellAt(cells, marketCapIndex)),
+        market: compactText(cellAt(cells, marketIndex)) || "-",
+        naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
+      },
+      {
+        priceColumn: priceIndex,
+        volumeColumn: volumeIndex,
+        tradeAmountColumn: tradeAmountIndex,
+        headers
+      }
+    );
+
+    if (parsed.tradingValueValidation.status === "repaired-price-volume") repairedTradeAmountCount += 1;
+    if (parsed.tradingValueValidation.status === "unverified") unverifiedTradeAmountCount += 1;
+
+    rawStocks.push(parsed);
   });
 
   const stocks = rawStocks.filter((stock) => !isEtfOrEtnStock(stock));
@@ -334,6 +440,8 @@ function parseSectorDetail(html, sector) {
     ...sector,
     stockCount: stocks.length,
     excludedEtfEtnCount: rawStocks.length - stocks.length,
+    repairedTradeAmountCount,
+    unverifiedTradeAmountCount,
     tradingValueMillion,
     volume,
     weightedChangeRate,
@@ -341,6 +449,16 @@ function parseSectorDetail(html, sector) {
     topStocks: tradingValueStocks.slice(0, 8),
     topTradingValueStocks: tradingValueStocks.slice(0, 8),
     topVolumeStocks: volumeStocks.slice(0, 8),
+    validation: {
+      source: "Naver Finance sector detail",
+      method: "header-aware parser + price-volume sanity check",
+      repairedTradeAmountCount,
+      unverifiedTradeAmountCount,
+      thresholds: {
+        minRatio: TRADE_VALUE_MIN_RATIO,
+        maxRatio: TRADE_VALUE_MAX_RATIO
+      }
+    },
     updatedAt: new Date().toISOString()
   };
 }
@@ -422,6 +540,10 @@ async function buildMarketSnapshot(force = false) {
               topStocks: [],
               topTradingValueStocks: [],
               topVolumeStocks: [],
+              excludedEtfEtnCount: 0,
+              repairedTradeAmountCount: 0,
+              unverifiedTradeAmountCount: 1,
+              validation: { error: error.message },
               error: error.message
             };
           }
@@ -440,6 +562,8 @@ async function buildMarketSnapshot(force = false) {
           acc.volume += sector.volume || 0;
           acc.stockCount += sector.stockCount || 0;
           acc.excludedEtfEtnCount += sector.excludedEtfEtnCount || 0;
+          acc.repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
+          acc.unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
           acc.breadth.rising += sector.risingCount || 0;
           acc.breadth.flat += sector.flatCount || 0;
           acc.breadth.falling += sector.fallingCount || 0;
@@ -451,6 +575,8 @@ async function buildMarketSnapshot(force = false) {
           stockCount: 0,
           sectorCount: rankedSectors.length,
           excludedEtfEtnCount: 0,
+          repairedTradeAmountCount: 0,
+          unverifiedTradeAmountCount: 0,
           breadth: { rising: 0, flat: 0, falling: 0 }
         }
       );
@@ -460,6 +586,7 @@ async function buildMarketSnapshot(force = false) {
         provider: "Naver Finance",
         overviewProvider: "Yahoo Finance",
         rankingBasis: "daily-trading-value",
+        validationMethod: "header-aware parser + price-volume sanity check",
         excludes: ["ETF", "ETN", "ELW"],
         refreshMs: STREAM_PUSH_MS,
         marketCacheMs: MARKET_CACHE_MS,
@@ -527,6 +654,7 @@ app.get("/api/provider", (_request, response) => {
     overviewProvider: "Yahoo Finance",
     mode: "localhost-live",
     rankingBasis: "daily-trading-value",
+    validationMethod: "header-aware parser + price-volume sanity check",
     excludes: ["ETF", "ETN", "ELW"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
@@ -603,6 +731,7 @@ app.listen(PORT, () => {
   console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
   console.log("Provider: Naver Finance only. KIS is disabled.");
   console.log("Ranking basis: daily trading value. ETF/ETN/ELW excluded.");
+  console.log("Validation: header-aware parser + price-volume sanity check.");
   console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
   console.log("Market overview: KOSPI/KOSDAQ/Nasdaq100 futures/USD-KRW/S&P500 via Yahoo Finance.");
 });
