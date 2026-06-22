@@ -8,9 +8,9 @@ const app = express();
 const PORT = Number(process.env.PORT || 4173);
 const NAVER_BASE_URL = "https://finance.naver.com";
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
-const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
+const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 30_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
-const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 8);
+const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 4);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,27 +18,6 @@ const __dirname = path.dirname(__filename);
 
 const marketCache = { data: null, expiresAt: 0, promise: null };
 const detailCache = new Map();
-const stockFlowCache = new Map();
-const STOCK_FLOW_CACHE_MS = Number(process.env.STOCK_FLOW_CACHE_MS || 60_000);
-const STOCK_FLOW_CONCURRENCY = Number(process.env.STOCK_FLOW_CONCURRENCY || 4);
-
-const allowedOrigins = new Set([
-  "http://localhost:4173",
-  "http://127.0.0.1:4173",
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  "https://sslee1210.github.io"
-]);
-
-function isAllowedOrigin(origin) {
-  if (!origin) return false;
-  if (allowedOrigins.has(origin)) return true;
-  try {
-    return new URL(origin).hostname.endsWith(".github.io");
-  } catch {
-    return false;
-  }
-}
 
 function compactText(value) {
   return String(value || "")
@@ -130,7 +109,17 @@ function parseSectorList(html) {
   return sectors;
 }
 
-function sortStocksByTradingValue(stocks) {
+function isEtfOrEtnStock(stock) {
+  const name = compactText(stock?.name || "");
+
+  return (
+    /\b(ETF|ETN|ELW)\b/i.test(name) ||
+    /^(KODEX|TIGER|ACE|RISE|KBSTAR|SOL|KOSEF|HANARO|ARIRANG|TIMEFOLIO|FOCUS|히어로즈|TREX|마이티|WOORI|파워|UNICORN)\b/i.test(name) ||
+    /(레버리지|인버스|선물|합성|커버드콜|액티브|TR\b|채권혼합|원자재|금선물|은선물|구리선물|원유선물|달러선물)/i.test(name)
+  );
+}
+
+function sortStocksByTradingValue(stocks = []) {
   return [...stocks].sort((left, right) => {
     const tradingGap = (right.tradeAmountMillion || 0) - (left.tradeAmountMillion || 0);
     if (tradingGap !== 0) return tradingGap;
@@ -138,7 +127,7 @@ function sortStocksByTradingValue(stocks) {
   });
 }
 
-function sortStocksByVolume(stocks) {
+function sortStocksByVolume(stocks = []) {
   return [...stocks].sort((left, right) => {
     const volumeGap = (right.volume || 0) - (left.volume || 0);
     if (volumeGap !== 0) return volumeGap;
@@ -146,208 +135,9 @@ function sortStocksByVolume(stocks) {
   });
 }
 
-function normalizeRatioParts(buyVolume, sellVolume) {
-  const buy = Number(buyVolume || 0);
-  const sell = Number(sellVolume || 0);
-  const total = buy + sell;
-
-  if (!Number.isFinite(total) || total <= 0) {
-    return {
-      buyVolume: null,
-      sellVolume: null,
-      buyRatio: null,
-      sellRatio: null,
-      bias: "unknown"
-    };
-  }
-
-  const buyRatio = (buy / total) * 100;
-  const sellRatio = 100 - buyRatio;
-
-  return {
-    buyVolume: buy,
-    sellVolume: sell,
-    buyRatio,
-    sellRatio,
-    bias:
-      Math.abs(buyRatio - sellRatio) < 3
-        ? "neutral"
-        : buyRatio > sellRatio
-          ? "buy"
-          : "sell"
-  };
-}
-
-function parseBrokerFlow(html) {
-  const $ = cheerio.load(html);
-  const pageText = compactText($("body").text());
-
-  if (!pageText.includes("매도상위") || !pageText.includes("매수상위")) {
-    return normalizeRatioParts(0, 0);
-  }
-
-  let sellVolume = 0;
-  let buyVolume = 0;
-
-  $("tr").each((_, row) => {
-    const cells = $(row)
-      .find("td,th")
-      .map((__, cell) => compactText($(cell).text()))
-      .get()
-      .filter(Boolean);
-
-    if (cells.length < 4) return;
-
-    const rowText = cells.join(" ");
-    if (/날짜|종가|전일비|등락률|거래량/.test(rowText)) return;
-
-    const brokerPairs = [];
-    for (let index = 0; index < cells.length - 1; index += 1) {
-      const label = cells[index];
-      const quantity = parseNumber(cells[index + 1]);
-      const looksLikeBroker = /[가-힣A-Za-z]/.test(label) && !/^\d/.test(label);
-      if (looksLikeBroker && quantity > 0) brokerPairs.push(quantity);
-    }
-
-    if (brokerPairs.length >= 2) {
-      sellVolume += brokerPairs[0];
-      buyVolume += brokerPairs[1];
-    }
-  });
-
-  return normalizeRatioParts(buyVolume, sellVolume);
-}
-
-function parseInvestorFlow(html) {
-  const $ = cheerio.load(html);
-  let latest = null;
-
-  $("tr").each((_, row) => {
-    if (latest) return;
-
-    const cells = $(row)
-      .find("td")
-      .map((__, cell) => compactText($(cell).text()))
-      .get()
-      .filter(Boolean);
-
-    if (cells.length < 7 || !/^\d{4}\.\d{2}\.\d{2}/.test(cells[0])) return;
-
-    latest = {
-      date: cells[0],
-      institutionNetVolume: parseNumber(cells[5]),
-      foreignNetVolume: parseNumber(cells[6]),
-      foreignHoldingShares: cells.length > 7 ? parseNumber(cells[7]) : null,
-      foreignHoldingRate: cells.length > 8 ? parsePercent(cells[8]) : null
-    };
-  });
-
-  return (
-    latest || {
-      date: null,
-      institutionNetVolume: null,
-      foreignNetVolume: null,
-      foreignHoldingShares: null,
-      foreignHoldingRate: null
-    }
-  );
-}
-
-async function getStockFlow(code) {
-  const cached = stockFlowCache.get(code);
-  if (cached?.data && cached.expiresAt > Date.now()) return cached.data;
-  if (cached?.promise) return cached.promise;
-
-  const promise = Promise.allSettled([
-    fetchHtml(`/item/main.naver?code=${code}`),
-    fetchHtml(`/item/frgn.naver?code=${code}`)
-  ])
-    .then(([mainResult, foreignResult]) => {
-      const brokerFlow =
-        mainResult.status === "fulfilled"
-          ? parseBrokerFlow(mainResult.value)
-          : normalizeRatioParts(0, 0);
-      const investorFlow =
-        foreignResult.status === "fulfilled"
-          ? parseInvestorFlow(foreignResult.value)
-          : {
-              date: null,
-              institutionNetVolume: null,
-              foreignNetVolume: null,
-              foreignHoldingShares: null,
-              foreignHoldingRate: null
-            };
-
-      const data = {
-        ...brokerFlow,
-        ...investorFlow,
-        source: "Naver Finance",
-        updatedAt: new Date().toISOString()
-      };
-
-      stockFlowCache.set(code, {
-        data,
-        expiresAt: Date.now() + STOCK_FLOW_CACHE_MS,
-        promise: null
-      });
-      return data;
-    })
-    .catch((error) => {
-      const fallback = {
-        buyVolume: null,
-        sellVolume: null,
-        buyRatio: null,
-        sellRatio: null,
-        bias: "unknown",
-        foreignNetVolume: null,
-        institutionNetVolume: null,
-        foreignHoldingRate: null,
-        source: "Naver Finance",
-        error: error.message,
-        updatedAt: new Date().toISOString()
-      };
-
-      stockFlowCache.set(code, {
-        data: fallback,
-        expiresAt: Date.now() + Math.min(STOCK_FLOW_CACHE_MS, 15_000),
-        promise: null
-      });
-      return fallback;
-    });
-
-  stockFlowCache.set(code, {
-    data: cached?.data || null,
-    expiresAt: cached?.expiresAt || 0,
-    promise
-  });
-  return promise;
-}
-
-async function enrichStockFlows(detail) {
-  const flowTargets = sortStocksByVolume(detail.stocks || []).slice(0, 12);
-  const flowEntries = await mapLimit(
-    flowTargets,
-    STOCK_FLOW_CONCURRENCY,
-    async (stock) => [stock.code, await getStockFlow(stock.code)]
-  );
-  const flowByCode = new Map(flowEntries);
-
-  const stocks = (detail.stocks || []).map((stock) => {
-    const flow = flowByCode.get(stock.code);
-    return flow ? { ...stock, flow } : stock;
-  });
-
-  return {
-    ...detail,
-    stocks,
-    topStocks: sortStocksByTradingValue(stocks).slice(0, 8),
-    topVolumeStocks: sortStocksByVolume(stocks).slice(0, 8)
-  };
-}
-
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
-  const stocks = [];
+  const rawStocks = [];
 
   $("td.name").each((_, nameCell) => {
     const row = $(nameCell).closest("tr");
@@ -362,49 +152,48 @@ function parseSectorDetail(html, sector) {
 
     if (!code || !name || cells.length < 9) return;
 
-    const changeRate = parsePercent(cells[3]);
-    stocks.push({
+    rawStocks.push({
       code,
       name,
       price: parseNumber(cells[1]),
       changeAmount: parseNumber(cells[2]),
-      changeRate,
-      bid: parseNumber(cells[4]),
-      ask: parseNumber(cells[5]),
-      volume: parseNumber(cells[6]),
-      tradeAmountMillion: parseNumber(cells[7]),
-      previousVolume: parseNumber(cells[8]),
-      market: compactText($(nameCell).find(".dot").text()) === "*" ? "KOSDAQ" : "KOSPI",
-      direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
-      provider: "Naver Finance",
+      changeRate: parsePercent(cells[3]),
+      volume: parseNumber(cells[4]),
+      tradeAmountMillion: parseNumber(cells[5]),
+      marketCapMillion: parseNumber(cells[6]),
+      market: compactText(cells[8]) || "-",
       naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
     });
   });
 
+  const stocks = rawStocks.filter((stock) => !isEtfOrEtnStock(stock));
   const tradingValueStocks = sortStocksByTradingValue(stocks);
   const volumeStocks = sortStocksByVolume(stocks);
-  const tradingValueMillion = stocks.reduce((sum, stock) => sum + stock.tradeAmountMillion, 0);
-  const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
+  const tradingValueMillion = stocks.reduce((sum, stock) => sum + (stock.tradeAmountMillion || 0), 0);
+  const volume = stocks.reduce((sum, stock) => sum + (stock.volume || 0), 0);
   const weightedChangeRate =
     tradingValueMillion > 0
-      ? stocks.reduce((sum, stock) => sum + stock.changeRate * stock.tradeAmountMillion, 0) / tradingValueMillion
+      ? stocks.reduce((sum, stock) => sum + (stock.changeRate || 0) * (stock.tradeAmountMillion || 0), 0) /
+        tradingValueMillion
       : sector.changeRate;
 
   return {
     ...sector,
+    stockCount: stocks.length,
+    excludedEtfEtnCount: rawStocks.length - stocks.length,
     tradingValueMillion,
     volume,
     weightedChangeRate,
-    topStocks: tradingValueStocks.slice(0, 8),
-    topVolumeStocks: volumeStocks.slice(0, 8),
     stocks: tradingValueStocks,
-    provider: "Naver Finance",
-    fetchedAt: new Date().toISOString()
+    topStocks: tradingValueStocks.slice(0, 8),
+    topTradingValueStocks: tradingValueStocks.slice(0, 8),
+    topVolumeStocks: volumeStocks.slice(0, 8),
+    updatedAt: new Date().toISOString()
   };
 }
 
 async function mapLimit(items, limit, mapper) {
-  const results = new Array(items.length);
+  const results = [];
   let cursor = 0;
 
   async function worker() {
@@ -415,11 +204,11 @@ async function mapLimit(items, limit, mapper) {
     }
   }
 
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
   return results;
 }
 
-async function getSectorDetail(sector, options = false) {
+async function getSectorDetail(sector, options = {}) {
   const force = typeof options === "boolean" ? options : Boolean(options.force);
   const cacheKey = sector.id;
   const cached = detailCache.get(cacheKey);
@@ -429,118 +218,113 @@ async function getSectorDetail(sector, options = false) {
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
     .then((html) => parseSectorDetail(html, sector))
-    .then((data) => enrichStockFlows(data))
     .then((data) => {
-      detailCache.set(cacheKey, { data, expiresAt: Date.now() + DETAIL_CACHE_MS, promise: null });
-      return data;
-    })
-    .catch((error) => {
-      const fallback = cached?.data || {
-        ...sector,
-        tradingValueMillion: 0,
-        volume: 0,
-        weightedChangeRate: sector.changeRate,
-        topStocks: [],
-        topVolumeStocks: [],
-        stocks: [],
-        provider: "Naver Finance",
-        fetchedAt: new Date().toISOString(),
-        error: error.message
-      };
       detailCache.set(cacheKey, {
-        data: fallback,
-        expiresAt: Date.now() + Math.min(DETAIL_CACHE_MS, 10_000),
+        data,
+        expiresAt: Date.now() + DETAIL_CACHE_MS,
         promise: null
       });
-      return fallback;
-    });
-
-  detailCache.set(cacheKey, { data: cached?.data, expiresAt: cached?.expiresAt || 0, promise });
-  return promise;
-}
-
-function summarizeSector(detail) {
-  const volumeStocks = sortStocksByVolume(detail.stocks || []);
-  const topVolumeStock = volumeStocks[0] || detail.topVolumeStocks?.[0] || detail.topStocks?.[0] || null;
-
-  return {
-    id: detail.id,
-    name: detail.name,
-    changeRate: detail.changeRate,
-    weightedChangeRate: detail.weightedChangeRate,
-    stockCount: detail.stockCount,
-    risingCount: detail.risingCount,
-    flatCount: detail.flatCount,
-    fallingCount: detail.fallingCount,
-    tradingValueMillion: detail.tradingValueMillion,
-    volume: detail.volume,
-    topStocks: detail.topStocks,
-    topVolumeStocks: detail.topVolumeStocks,
-    stocks: volumeStocks.slice(0, 12),
-    topStockName: topVolumeStock?.name || null,
-    topStockCode: topVolumeStock?.code || null,
-    naverUrl: detail.naverUrl,
-    error: detail.error || null
-  };
-}
-
-async function buildMarketSnapshot() {
-  const sectorHtml = await fetchHtml("/sise/sise_group.naver?type=upjong");
-  const sectors = parseSectorList(sectorHtml);
-  const details = await mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => getSectorDetail(sector));
-  const summaries = details.map(summarizeSector).sort((a, b) => b.volume - a.volume);
-  const totalTradingValueMillion = summaries.reduce((sum, sector) => sum + sector.tradingValueMillion, 0);
-  const totalVolume = summaries.reduce((sum, sector) => sum + sector.volume, 0);
-  const breadth = summaries.reduce(
-    (acc, sector) => {
-      acc.rising += sector.risingCount;
-      acc.flat += sector.flatCount;
-      acc.falling += sector.fallingCount;
-      return acc;
-    },
-    { rising: 0, flat: 0, falling: 0 }
-  );
-
-  return {
-    updatedAt: new Date().toISOString(),
-    mode: "localhost-live",
-    source: {
-      name: "Naver Finance",
-      url: `${NAVER_BASE_URL}/sise/sise_group.naver?type=upjong`,
-      tradingValueUnit: "millionKRW"
-    },
-    totals: {
-      sectorCount: summaries.length,
-      tradingValueMillion: totalTradingValueMillion,
-      volume: totalVolume,
-      breadth
-    },
-    sectors: summaries
-  };
-}
-
-async function getMarketSnapshot() {
-  if (marketCache.data && marketCache.expiresAt > Date.now()) return marketCache.data;
-  if (marketCache.promise) return marketCache.promise;
-
-  marketCache.promise = buildMarketSnapshot()
-    .then((data) => {
-      marketCache.data = data;
-      marketCache.expiresAt = Date.now() + MARKET_CACHE_MS;
-      marketCache.promise = null;
       return data;
     })
     .catch((error) => {
-      marketCache.promise = null;
-      if (marketCache.data) return { ...marketCache.data, stale: true, error: error.message };
+      detailCache.set(cacheKey, {
+        data: cached?.data || null,
+        expiresAt: Date.now() + 5_000,
+        promise: null
+      });
+      if (cached?.data) return cached.data;
       throw error;
     });
 
-  return marketCache.promise;
+  detailCache.set(cacheKey, { data: cached?.data || null, expiresAt: 0, promise });
+  return promise;
+}
+
+function sortSectorsByTradingValue(sectors = []) {
+  return [...sectors].sort((left, right) => {
+    const tradingGap = (right.tradingValueMillion || 0) - (left.tradingValueMillion || 0);
+    if (tradingGap !== 0) return tradingGap;
+    return (right.volume || 0) - (left.volume || 0);
+  });
+}
+
+async function buildMarketSnapshot(force = false) {
+  if (!force && marketCache.data && marketCache.expiresAt > Date.now()) return marketCache.data;
+  if (!force && marketCache.promise) return marketCache.promise;
+
+  const promise = fetchHtml("/sise/sise_group.naver?type=upjong")
+    .then(parseSectorList)
+    .then(async (sectors) => {
+      const details = await mapLimit(sectors, DETAIL_CONCURRENCY, async (sector) => {
+        try {
+          return await getSectorDetail(sector, { force });
+        } catch (error) {
+          return {
+            ...sector,
+            tradingValueMillion: 0,
+            volume: 0,
+            weightedChangeRate: sector.changeRate,
+            stocks: [],
+            topStocks: [],
+            topTradingValueStocks: [],
+            topVolumeStocks: [],
+            error: error.message
+          };
+        }
+      });
+
+      const rankedSectors = sortSectorsByTradingValue(details).map((sector, index) => ({
+        ...sector,
+        rank: index + 1
+      }));
+
+      const totals = rankedSectors.reduce(
+        (acc, sector) => {
+          acc.tradingValueMillion += sector.tradingValueMillion || 0;
+          acc.volume += sector.volume || 0;
+          acc.stockCount += sector.stockCount || 0;
+          acc.excludedEtfEtnCount += sector.excludedEtfEtnCount || 0;
+          acc.breadth.rising += sector.risingCount || 0;
+          acc.breadth.flat += sector.flatCount || 0;
+          acc.breadth.falling += sector.fallingCount || 0;
+          return acc;
+        },
+        {
+          tradingValueMillion: 0,
+          volume: 0,
+          stockCount: 0,
+          sectorCount: rankedSectors.length,
+          excludedEtfEtnCount: 0,
+          breadth: { rising: 0, flat: 0, falling: 0 }
+        }
+      );
+
+      return {
+        mode: "localhost-live",
+        provider: "Naver Finance",
+        rankingBasis: "daily-trading-value",
+        excludes: ["ETF", "ETN", "ELW"],
+        updatedAt: new Date().toISOString(),
+        totals,
+        sectors: rankedSectors
+      };
+    });
+
+  marketCache.promise = promise;
+
+  try {
+    const data = await promise;
+    marketCache.data = data;
+    marketCache.expiresAt = Date.now() + MARKET_CACHE_MS;
+    return data;
+  } finally {
+    marketCache.promise = null;
+  }
 }
 
 function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
-  const items = (stocks || []).slice(0, limit).map((stock) => ({
+  const filtered = (stocks || []).filter((stock) => !isEtfOrEtnStock(stock));
+  const items = filtered.slice(0, limit).map((stock) => ({
     code: stock.code,
     name: stock.name,
     day: stock.volume || 0,
@@ -551,7 +335,6 @@ function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
   return {
     sampleSize: items.length,
     limit,
-    provider: "Naver Finance",
     byCode: Object.fromEntries(items.map((item) => [item.code, item])),
     counts: {
       day: items.filter((item) => item.day !== null && item.day !== undefined).length,
@@ -567,105 +350,84 @@ function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
   };
 }
 
+app.use(express.json({ limit: "1mb" }));
+
 app.use((request, response, next) => {
-  const origin = request.headers.origin;
-  if (isAllowedOrigin(origin)) {
-    response.setHeader("Access-Control-Allow-Origin", origin);
-    response.setHeader("Vary", "Origin");
-  }
-  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-  if (request.method === "OPTIONS") {
-    response.sendStatus(204);
-    return;
-  }
-  next();
+  response.setHeader("access-control-allow-origin", request.headers.origin || "*");
+  response.setHeader("access-control-allow-methods", "GET,POST,OPTIONS");
+  response.setHeader("access-control-allow-headers", "content-type");
+  if (request.method === "OPTIONS") return response.sendStatus(204);
+  return next();
 });
 
-app.use(express.json({ limit: "2mb" }));
-
-app.get("/api/health", (_, response) => {
-  response.json({ ok: true, mode: "localhost-live", provider: "Naver Finance", now: new Date().toISOString() });
-});
-
-app.get("/api/provider", (_, response) => {
+app.get("/api/provider", (_request, response) => {
   response.json({
-    market: "Naver Finance",
-    sectorDetail: "Naver Finance",
-    volumeProfile: "Naver Finance day-volume only",
-    stockFlow: "Naver Finance broker flow and foreign net flow when available",
+    provider: "Naver Finance",
+    mode: "localhost-live",
+    rankingBasis: "daily-trading-value",
+    excludes: ["ETF", "ETN", "ELW"],
     kis: { configured: false, enabled: false }
   });
 });
 
-app.get("/api/sectors", async (_, response) => {
+app.get("/api/sectors", async (request, response) => {
   try {
-    response.json(await getMarketSnapshot());
+    response.json(await buildMarketSnapshot(request.query.force === "1"));
   } catch (error) {
-    response.status(502).json({ message: "Failed to load market data", error: error.message });
+    response.status(502).json({ error: error.message });
   }
 });
 
 app.get("/api/sectors/:id", async (request, response) => {
   try {
-    const snapshot = await getMarketSnapshot();
+    const snapshot = await buildMarketSnapshot(false);
     const sector = snapshot.sectors.find((item) => item.id === request.params.id);
-    if (!sector) {
-      response.status(404).json({ message: "Sector not found" });
-      return;
-    }
+    if (!sector) return response.status(404).json({ error: "Sector not found" });
     response.json(await getSectorDetail(sector, { force: true }));
   } catch (error) {
-    response.status(502).json({ message: "Failed to load sector detail", error: error.message });
+    response.status(502).json({ error: error.message });
   }
 });
 
 app.post("/api/volume-profile", (request, response) => {
-  const stocks = Array.isArray(request.body?.stocks) ? request.body.stocks : [];
-  const limit = Number(request.body?.limit || VOLUME_HISTORY_LIMIT);
-  response.json(buildVolumeProfile(stocks, limit));
+  response.json(buildVolumeProfile(request.body?.stocks || [], Number(request.body?.limit || VOLUME_HISTORY_LIMIT)));
 });
 
 app.get("/api/stream", async (request, response) => {
-  response.writeHead(200, {
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-    "Content-Type": "text/event-stream",
-    "X-Accel-Buffering": "no"
+  response.setHeader("content-type", "text/event-stream; charset=utf-8");
+  response.setHeader("cache-control", "no-cache, no-transform");
+  response.setHeader("connection", "keep-alive");
+  response.flushHeaders?.();
+
+  let closed = false;
+  request.on("close", () => {
+    closed = true;
   });
 
-  const sendSnapshot = async () => {
+  const send = async () => {
+    if (closed) return;
     try {
-      const payload = await getMarketSnapshot();
-      response.write("event: market\n");
-      response.write(`data: ${JSON.stringify(payload)}\n\n`);
+      const snapshot = await buildMarketSnapshot(true);
+      response.write(`event: market\n`);
+      response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     } catch (error) {
-      response.write("event: error\n");
-      response.write(`data: ${JSON.stringify({ message: error.message })}\n\n`);
+      response.write(`event: error\n`);
+      response.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
     }
   };
 
-  await sendSnapshot();
-  const interval = setInterval(sendSnapshot, MARKET_CACHE_MS);
+  await send();
+  const interval = setInterval(send, MARKET_CACHE_MS);
   request.on("close", () => clearInterval(interval));
 });
 
 app.use(express.static(path.join(__dirname, "dist")));
-
-app.use((request, response, next) => {
-  if (request.method !== "GET") {
-    next();
-    return;
-  }
+app.get(/.*/, (_request, response) => {
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
-export { app, buildMarketSnapshot, getMarketSnapshot, getSectorDetail };
-
-if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
-  app.listen(PORT, () => {
-    console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
-    console.log("Provider: Naver Finance only. KIS is disabled.");
-  });
-}
+app.listen(PORT, () => {
+  console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
+  console.log("Provider: Naver Finance only. KIS is disabled.");
+  console.log("Ranking basis: daily trading value. ETF/ETN/ELW excluded.");
+});
