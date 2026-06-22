@@ -35,6 +35,7 @@ const canUseSameOriginApi =
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
 const apiFallbackPollMs = 1_000;
 const staticFallbackPollMs = 60_000;
+const localSnapshotKey = "moneyboard:last-market-snapshot";
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
@@ -45,11 +46,34 @@ function staticDataUrl(path) {
   return `${appBasePath}/data/${cleanPath}`.replace(/^\/\//, "/");
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, options = {}) {
   const separator = url.includes("?") ? "&" : "?";
-  const response = await fetch(`${url}${separator}t=${Date.now()}`);
+  const response = await fetch(`${url}${separator}t=${Date.now()}`, options);
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
   return response.json();
+}
+
+function readCachedSnapshot() {
+  if (typeof window === "undefined") return null;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(localSnapshotKey) || "null");
+    if (!parsed || !Array.isArray(parsed.sectors)) return null;
+    return {
+      ...parsed,
+      cacheState: "browser-cache",
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedSnapshot(snapshot) {
+  if (typeof window === "undefined" || !snapshot || !Array.isArray(snapshot.sectors)) return;
+  try {
+    window.localStorage.setItem(localSnapshotKey, JSON.stringify(snapshot));
+  } catch {
+    // localStorage 용량/권한 오류는 화면 갱신을 막지 않는다.
+  }
 }
 
 function formatTradingValue(millionWon = 0) {
@@ -130,6 +154,22 @@ function sortStocksByTradingValue(stocks = []) {
   });
 }
 
+function sameSectorDetail(detail, sector) {
+  return Boolean(detail?.id && sector?.id && String(detail.id) === String(sector.id));
+}
+
+function usableSectorDetail(detail, sector) {
+  return sameSectorDetail(detail, sector) ? detail : null;
+}
+
+function sectorStockSource(sector, detail) {
+  const activeDetail = usableSectorDetail(detail, sector);
+  if (activeDetail?.stocks?.length) return activeDetail.stocks;
+  if (sector?.stocks?.length) return sector.stocks;
+  if (sector?.topTradingValueStocks?.length) return sector.topTradingValueStocks;
+  return sector?.topStocks || [];
+}
+
 function sparklinePath(points, width = 180, height = 46, padding = 3) {
   const values = points
     .map((point) => Number(point.value))
@@ -158,8 +198,8 @@ function validationMessage(snapshot, fallback = "") {
 }
 
 function useMarketStream() {
-  const [snapshot, setSnapshot] = useState(null);
-  const [streamState, setStreamState] = useState("connecting");
+  const [snapshot, setSnapshot] = useState(() => readCachedSnapshot());
+  const [streamState, setStreamState] = useState(() => (readCachedSnapshot() ? "cached" : "connecting"));
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -168,10 +208,11 @@ function useMarketStream() {
     let timer;
 
     const applySnapshot = (data, state = "live", message = "") => {
-      if (closed) return;
+      if (closed || !data || !Array.isArray(data.sectors)) return;
       setSnapshot(data);
       setStreamState(state);
       setError(message);
+      writeCachedSnapshot(data);
     };
 
     const pollApi = async () => {
@@ -180,7 +221,7 @@ function useMarketStream() {
         applySnapshot(data, "polling", validationMessage(data, "1초 폴링 갱신"));
       } catch (pollError) {
         if (!closed) {
-          setStreamState("offline");
+          setStreamState(snapshot ? "cached" : "offline");
           setError(pollError.message);
         }
       } finally {
@@ -194,7 +235,7 @@ function useMarketStream() {
         applySnapshot(data, "static", validationMessage(data, "정적 스냅샷 수신"));
       } catch (staticError) {
         if (!closed) {
-          setStreamState("offline");
+          setStreamState(snapshot ? "cached" : "offline");
           setError(staticError.message);
         }
       } finally {
@@ -232,8 +273,8 @@ function useMarketStream() {
     });
     stream.addEventListener("error", () => {
       if (!closed) {
-        setStreamState("polling");
-        setError("스트림 연결 끊김 · 1초 폴링 전환");
+        setStreamState(snapshot ? "cached" : "polling");
+        setError("스트림 연결 끊김 · 폴링 전환");
         stream?.close();
         void pollApi();
       }
@@ -415,7 +456,8 @@ function TopTradingPanel({ sectors }) {
 }
 
 function SelectedSectorPanel({ sector, detail, loading }) {
-  const changeRate = detail?.weightedChangeRate ?? sector?.weightedChangeRate ?? sector?.changeRate ?? 0;
+  const activeDetail = usableSectorDetail(detail, sector);
+  const changeRate = activeDetail?.weightedChangeRate ?? sector?.weightedChangeRate ?? sector?.changeRate ?? 0;
 
   return (
     <section className="panel selected-sector-panel">
@@ -426,18 +468,18 @@ function SelectedSectorPanel({ sector, detail, loading }) {
         </div>
         <div className={`sync-badge ${loading ? "loading" : "live"}`}>
           <i />
-          {loading ? "갱신 중" : detail?.validation?.status === "ok" ? "검증 OK" : "동기화"}
+          {loading ? "갱신 중" : activeDetail?.validation?.status === "ok" ? "검증 OK" : "동기화"}
         </div>
       </div>
       <div className="selected-stats">
         <div>
           <span>당일 거래대금</span>
-          <strong>{formatTradingValue(detail?.tradingValueMillion ?? sector?.tradingValueMillion)}</strong>
+          <strong>{formatTradingValue(activeDetail?.tradingValueMillion ?? sector?.tradingValueMillion)}</strong>
           <small>ETF/ETN/ELW 제외</small>
         </div>
         <div>
           <span>거래량</span>
-          <strong>{formatVolume(detail?.volume ?? sector?.volume)}</strong>
+          <strong>{formatVolume(activeDetail?.volume ?? sector?.volume)}</strong>
           <small>일반 종목 기준</small>
         </div>
         <div>
@@ -451,16 +493,10 @@ function SelectedSectorPanel({ sector, detail, loading }) {
 }
 
 function SelectedStocksPanel({ sector, detail, loading }) {
+  const activeDetail = usableSectorDetail(detail, sector);
   const stocks = useMemo(() => {
-    const source = detail?.stocks?.length
-      ? detail.stocks
-      : sector?.stocks?.length
-        ? sector.stocks
-        : sector?.topTradingValueStocks?.length
-          ? sector.topTradingValueStocks
-          : sector?.topStocks || [];
-    return sortStocksByTradingValue(source).slice(0, 20);
-  }, [detail?.stocks, sector?.stocks, sector?.topTradingValueStocks, sector?.topStocks]);
+    return sortStocksByTradingValue(sectorStockSource(sector, activeDetail)).slice(0, 20);
+  }, [activeDetail, sector]);
 
   return (
     <section className="panel selected-stocks-panel">
@@ -471,7 +507,7 @@ function SelectedStocksPanel({ sector, detail, loading }) {
         </div>
         <div className={`sync-badge ${loading ? "loading" : "live"}`}>
           <i />
-          {loading ? "상세 수집" : detail?.validation?.status === "ok" ? "검증 OK" : "상세 동기화"}
+          {loading ? "상세 수집" : activeDetail?.validation?.status === "ok" ? "검증 OK" : "상세 동기화"}
         </div>
       </div>
 
@@ -505,6 +541,11 @@ function SelectedStocksPanel({ sector, detail, loading }) {
                 <td>{stock.market || stock.tradingValueValidation?.status || "-"}</td>
               </tr>
             ))}
+            {!stocks.length && (
+              <tr>
+                <td colSpan={7}>선택 섹터 종목 집계 대기 중</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -521,7 +562,7 @@ function LoadingState({ error }) {
           Moneyboard
         </span>
         <h1>데이터 수신 대기 중</h1>
-        <p>로컬 서버 또는 GitHub Pages 스냅샷에서 검증된 네이버 금융 섹터 데이터를 수신합니다.</p>
+        <p>로컬 서버 또는 이전 브라우저 캐시에서 검증된 섹터 데이터를 수신합니다.</p>
         {error && <code>{error}</code>}
       </section>
     </main>
@@ -545,6 +586,7 @@ export default function App() {
 
   const defaultSector = rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
   const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
+  const activeSectorDetail = usableSectorDetail(sectorDetail, selectedSector);
 
   const filteredSectors = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -574,19 +616,24 @@ export default function App() {
   }, [manualSelection, rankedSectors, selectedId]);
 
   useEffect(() => {
-    if (!selectedSector?.id) return;
+    if (!selectedSector?.id) return undefined;
 
+    const requestedId = String(selectedSector.id);
+    const controller = new AbortController();
     let cancelled = false;
 
+    setSectorDetail((current) => (sameSectorDetail(current, selectedSector) ? current : null));
+    setDetailLoading(true);
+
     async function loadDetail() {
-      setDetailLoading(true);
       try {
         const data = await fetchJson(
-          canUseApi ? apiUrl(`/api/sectors/${selectedSector.id}`) : staticDataUrl(`sectors/${selectedSector.id}.json`),
+          canUseApi ? apiUrl(`/api/sectors/${requestedId}`) : staticDataUrl(`sectors/${requestedId}.json`),
+          { signal: controller.signal },
         );
-        if (!cancelled) setSectorDetail(data);
-      } catch {
-        if (!cancelled) setSectorDetail(selectedSector);
+        if (!cancelled && String(data?.id) === requestedId) setSectorDetail(data);
+      } catch (loadError) {
+        if (!cancelled && loadError.name !== "AbortError") setSectorDetail(selectedSector);
       } finally {
         if (!cancelled) setDetailLoading(false);
       }
@@ -595,8 +642,9 @@ export default function App() {
     void loadDetail();
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [selectedSector?.id, snapshot?.updatedAt]);
+  }, [selectedSector?.id]);
 
   if (!snapshot || !Array.isArray(snapshot.sectors)) {
     return <LoadingState error={error} />;
@@ -611,7 +659,9 @@ export default function App() {
         ? "POLLING"
         : streamState === "static"
           ? "STATIC"
-          : "OFFLINE";
+          : streamState === "cached"
+            ? "CACHED"
+            : "OFFLINE";
 
   return (
     <main className="moneyboard-app">
@@ -687,6 +737,8 @@ export default function App() {
               maxTradingValue={maxTradingValue}
               onSelect={(nextSector) => {
                 setManualSelection(true);
+                setSectorDetail(null);
+                setDetailLoading(true);
                 setSelectedId(nextSector.id);
               }}
             />
@@ -698,20 +750,20 @@ export default function App() {
         <TopTradingPanel sectors={rankedSectors} />
         <SelectedSectorPanel
           sector={selectedSector}
-          detail={sectorDetail}
+          detail={activeSectorDetail}
           loading={detailLoading}
         />
       </section>
 
       <SelectedStocksPanel
         sector={selectedSector}
-        detail={sectorDetail}
+        detail={activeSectorDetail}
         loading={detailLoading}
       />
 
       <footer>
         섹터/종목 데이터는 네이버 금융 업종별 시세를 기반으로 수집하며, 거래대금 컬럼은 현재가×거래량 검증 후 표시합니다.
-        로컬 서버는 1초 단위 라이브 동기화, GitHub Pages는 Actions가 생성한 검증 스냅샷을 사용합니다.
+        로컬 서버는 라이브 동기화, 브라우저는 직전 정상 스냅샷을 즉시 표시한 뒤 최신 데이터로 교체합니다.
       </footer>
     </main>
   );
