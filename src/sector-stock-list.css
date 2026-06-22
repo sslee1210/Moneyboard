@@ -1,0 +1,104 @@
+.sector-stock-list {
+  display: grid;
+  gap: 7px;
+  padding-top: 4px;
+}
+
+.sector-stock-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.92fr) minmax(96px, 1.08fr);
+  gap: 8px;
+  align-items: center;
+  padding: 7px 8px;
+  border: 1px solid rgba(223, 227, 223, 0.86);
+  border-radius: 10px;
+  background: rgba(248, 250, 248, 0.9);
+}
+
+.sector-stock-name {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sector-stock-name strong {
+  overflow: hidden;
+  color: #1d2428;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sector-stock-name span {
+  overflow: hidden;
+  color: #7a8387;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sector-stock-volume {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+}
+
+.sector-stock-volume-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.sector-stock-volume-top strong {
+  color: #101519;
+  font-size: 12px;
+  font-weight: 950;
+  white-space: nowrap;
+}
+
+.sector-stock-volume-top em {
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.sector-stock-volume-bar {
+  position: relative;
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: #e8ece8;
+}
+
+.sector-stock-volume-bar i {
+  display: block;
+  height: 100%;
+  max-width: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #2f7d68, #89b66f);
+}
+
+.sector-stock-more {
+  color: #737c80;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: right;
+}
+
+@media (max-width: 1480px) {
+  .sector-stock-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1080px) {
+  .sector-stock-row {
+    grid-template-columns: minmax(84px, 0.9fr) minmax(110px, 1.1fr);
+  }
+}
