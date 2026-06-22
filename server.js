@@ -127,6 +127,22 @@ function parseSectorList(html) {
   return sectors;
 }
 
+function sortStocksByTradingValue(stocks) {
+  return [...stocks].sort((left, right) => {
+    const tradingGap = (right.tradeAmountMillion || 0) - (left.tradeAmountMillion || 0);
+    if (tradingGap !== 0) return tradingGap;
+    return (right.volume || 0) - (left.volume || 0);
+  });
+}
+
+function sortStocksByVolume(stocks) {
+  return [...stocks].sort((left, right) => {
+    const volumeGap = (right.volume || 0) - (left.volume || 0);
+    if (volumeGap !== 0) return volumeGap;
+    return (right.tradeAmountMillion || 0) - (left.tradeAmountMillion || 0);
+  });
+}
+
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
   const stocks = [];
@@ -163,8 +179,8 @@ function parseSectorDetail(html, sector) {
     });
   });
 
-  stocks.sort((left, right) => right.tradeAmountMillion - left.tradeAmountMillion);
-
+  const tradingValueStocks = sortStocksByTradingValue(stocks);
+  const volumeStocks = sortStocksByVolume(stocks);
   const tradingValueMillion = stocks.reduce((sum, stock) => sum + stock.tradeAmountMillion, 0);
   const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
   const weightedChangeRate =
@@ -177,8 +193,9 @@ function parseSectorDetail(html, sector) {
     tradingValueMillion,
     volume,
     weightedChangeRate,
-    topStocks: stocks.slice(0, 8),
-    stocks,
+    topStocks: tradingValueStocks.slice(0, 8),
+    topVolumeStocks: volumeStocks.slice(0, 8),
+    stocks: tradingValueStocks,
     provider: "Naver Finance",
     fetchedAt: new Date().toISOString()
   };
@@ -221,6 +238,7 @@ async function getSectorDetail(sector, options = false) {
         volume: 0,
         weightedChangeRate: sector.changeRate,
         topStocks: [],
+        topVolumeStocks: [],
         stocks: [],
         provider: "Naver Finance",
         fetchedAt: new Date().toISOString(),
@@ -239,7 +257,7 @@ async function getSectorDetail(sector, options = false) {
 }
 
 function summarizeSector(detail) {
-  const topStock = detail.topStocks?.[0] || null;
+  const topVolumeStock = detail.topVolumeStocks?.[0] || detail.topStocks?.[0] || null;
   return {
     id: detail.id,
     name: detail.name,
@@ -252,8 +270,9 @@ function summarizeSector(detail) {
     tradingValueMillion: detail.tradingValueMillion,
     volume: detail.volume,
     topStocks: detail.topStocks,
-    topStockName: topStock?.name || null,
-    topStockCode: topStock?.code || null,
+    topVolumeStocks: detail.topVolumeStocks,
+    topStockName: topVolumeStock?.name || null,
+    topStockCode: topVolumeStock?.code || null,
     naverUrl: detail.naverUrl,
     error: detail.error || null
   };
