@@ -60,6 +60,15 @@ function maskSecret(value) {
   return `${text.slice(0, 4)}***${text.slice(-4)}`;
 }
 
+function isPlaceholderCredential(value) {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  return (
+    /너의|발급|입력|예시|YOUR|CHANGE_ME|APP_KEY|APP_SECRET|KIS_APP/i.test(text) ||
+    /[ㄱ-ㅎㅏ-ㅣ가-힣]/.test(text)
+  );
+}
+
 export const KIS_ENV = normalizeEnv(process.env.KIS_ENV);
 export const KIS_APP_KEY = process.env.KIS_APP_KEY || "";
 export const KIS_APP_SECRET = process.env.KIS_APP_SECRET || "";
@@ -88,8 +97,14 @@ export const KIS_SELECTED_SECTOR_STOCKS = Math.max(
   numericEnv(process.env.KIS_SELECTED_SECTOR_STOCKS, 20)
 );
 
-const hasCredentials = Boolean(KIS_APP_KEY && KIS_APP_SECRET);
-export const KIS_ENABLED = boolEnv(process.env.KIS_ENABLED, false) && hasCredentials;
+const hasRealCredentials = Boolean(
+  KIS_APP_KEY &&
+    KIS_APP_SECRET &&
+    !isPlaceholderCredential(KIS_APP_KEY) &&
+    !isPlaceholderCredential(KIS_APP_SECRET)
+);
+const requestedEnabled = boolEnv(process.env.KIS_ENABLED, false);
+export const KIS_ENABLED = requestedEnabled && hasRealCredentials;
 
 const tokenCache = { token: "", expiresAt: 0, promise: null };
 const quoteCache = new Map();
@@ -165,12 +180,14 @@ function parseTokenExpiry(json) {
 
 export function getKisStatus() {
   return {
-    configured: hasCredentials,
+    configured: hasRealCredentials,
+    requestedEnabled,
     enabled: KIS_ENABLED,
     env: KIS_ENV,
     baseUrl: KIS_BASE_URL,
     marketDivCode: KIS_MARKET_DIV_CODE,
     appKey: maskSecret(KIS_APP_KEY),
+    placeholderCredentials: requestedEnabled && !hasRealCredentials,
     accountConfigured: Boolean(KIS_ACCOUNT_NO && KIS_ACCOUNT_PRODUCT_CODE),
     htsIdConfigured: Boolean(KIS_HTS_ID),
     quoteCacheMs: KIS_QUOTE_CACHE_MS,
@@ -185,7 +202,7 @@ export function getKisStatus() {
 export async function getKisToken({ force = false } = {}) {
   if (!KIS_ENABLED) {
     throw new Error(
-      hasCredentials ? "KIS_ENABLED is not true" : "KIS_APP_KEY/KIS_APP_SECRET are not configured"
+      hasRealCredentials ? "KIS_ENABLED is not true" : "KIS_APP_KEY/KIS_APP_SECRET are not real credentials"
     );
   }
 
