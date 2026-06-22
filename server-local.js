@@ -30,6 +30,17 @@ function isValidStockCode(code) {
   return STOCK_CODE_PATTERN.test(String(code || ""));
 }
 
+function isFinitePositiveNumber(value) {
+  return Number.isFinite(Number(value)) && Number(value) > 0;
+}
+
+function isVerifiedTradingValueStock(stock) {
+  const status = stock?.tradingValueValidation?.status || "unknown";
+  if (status === "unverified") return false;
+  if (!isFinitePositiveNumber(stock?.tradeAmountMillion)) return false;
+  return true;
+}
+
 function countOrderErrors(items, field) {
   let errors = 0;
   for (let index = 1; index < items.length; index += 1) {
@@ -50,6 +61,7 @@ function sanitizeStocks(stocks = []) {
   const seen = new Set();
   const invalidStocks = [];
   const duplicateStocks = [];
+  const unverifiedStocks = [];
   const cleanStocks = [];
 
   for (const stock of stocks || []) {
@@ -65,18 +77,25 @@ function sanitizeStocks(stocks = []) {
     }
 
     seen.add(code);
+
+    if (!isVerifiedTradingValueStock(stock)) {
+      unverifiedStocks.push({ ...stock, code });
+      continue;
+    }
+
     cleanStocks.push({ ...stock, code });
   }
 
   return {
     stocks: sortStocksByTradingValue(cleanStocks),
     invalidStocks,
-    duplicateStocks
+    duplicateStocks,
+    unverifiedStocks
   };
 }
 
 function recalculateSector(sector) {
-  const { stocks, invalidStocks, duplicateStocks } = sanitizeStocks(sector.stocks || []);
+  const { stocks, invalidStocks, duplicateStocks, unverifiedStocks } = sanitizeStocks(sector.stocks || []);
   const volumeStocks = [...stocks].sort((left, right) => {
     const volumeGap = (right.volume || 0) - (left.volume || 0);
     if (volumeGap !== 0) return volumeGap;
@@ -100,13 +119,16 @@ function recalculateSector(sector) {
   const stockOrderErrorCount = countOrderErrors(stocks, "tradeAmountMillion");
   const invalidStockCount = invalidStocks.length;
   const duplicateStockCount = duplicateStocks.length;
+  const unverifiedDroppedStockCount = unverifiedStocks.length;
+  const droppedStockCount = invalidStockCount + duplicateStockCount + unverifiedDroppedStockCount;
 
   return {
     ...sector,
     stockCount: stocks.length,
     invalidStockCount,
     duplicateStockCount,
-    droppedStockCount: invalidStockCount + duplicateStockCount,
+    unverifiedDroppedStockCount,
+    droppedStockCount,
     tradingValueMillion,
     volume,
     weightedChangeRate,
@@ -125,7 +147,8 @@ function recalculateSector(sector) {
       stockOrderErrorCount,
       invalidStockCount,
       duplicateStockCount,
-      droppedStockCount: invalidStockCount + duplicateStockCount,
+      unverifiedDroppedStockCount,
+      droppedStockCount,
       repairedTradeAmountCount,
       derivedTradeAmountCount,
       unverifiedTradeAmountCount,
@@ -142,6 +165,7 @@ function buildTotals(sectors = []) {
       acc.tradingValueMillion += sector.tradingValueMillion || 0;
       acc.volume += sector.volume || 0;
       acc.stockCount += sector.stockCount || 0;
+      acc.sectorCount = sectors.length;
       acc.excludedEtfEtnCount += sector.excludedEtfEtnCount || 0;
       acc.repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
       acc.derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
@@ -150,6 +174,8 @@ function buildTotals(sectors = []) {
       acc.kisErrorCount += sector.kisErrorCount || 0;
       acc.invalidStockCount += sector.invalidStockCount || 0;
       acc.duplicateStockCount += sector.duplicateStockCount || 0;
+      acc.unverifiedDroppedStockCount += sector.unverifiedDroppedStockCount || 0;
+      acc.droppedStockCount += sector.droppedStockCount || 0;
       acc.breadth.rising += sector.risingCount || 0;
       acc.breadth.flat += sector.flatCount || 0;
       acc.breadth.falling += sector.fallingCount || 0;
@@ -168,6 +194,8 @@ function buildTotals(sectors = []) {
       kisErrorCount: 0,
       invalidStockCount: 0,
       duplicateStockCount: 0,
+      unverifiedDroppedStockCount: 0,
+      droppedStockCount: 0,
       breadth: { rising: 0, flat: 0, falling: 0 }
     }
   );
@@ -181,6 +209,7 @@ function sanitizeSnapshot(snapshot) {
   const validation = buildSnapshotValidation(sectors);
   const invalidStockCount = sectors.reduce((sum, sector) => sum + (sector.invalidStockCount || 0), 0);
   const duplicateStockCount = sectors.reduce((sum, sector) => sum + (sector.duplicateStockCount || 0), 0);
+  const unverifiedDroppedStockCount = sectors.reduce((sum, sector) => sum + (sector.unverifiedDroppedStockCount || 0), 0);
 
   return {
     ...snapshot,
@@ -190,9 +219,11 @@ function sanitizeSnapshot(snapshot) {
       ...validation,
       invalidStockCount,
       duplicateStockCount,
-      droppedStockCount: invalidStockCount + duplicateStockCount,
-      sanitizer: "final API response sanitizer: valid six-digit stock codes only"
-    }
+      unverifiedDroppedStockCount,
+      droppedStockCount: invalidStockCount + duplicateStockCount + unverifiedDroppedStockCount,
+      sanitizer: "final API response sanitizer: valid six-digit stock codes and verified trading value only"
+    },
+    excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "unverified trading value rows"]
   };
 }
 
@@ -217,9 +248,9 @@ app.get("/api/provider", (_request, response) => {
     mode: "localhost-live-sanitized",
     rankingBasis: KIS_ENABLED ? "kis-verified-daily-trading-value" : "validated-daily-trading-value",
     validationMethod: KIS_ENABLED
-      ? "KIS REST quote overlay + Naver header-aligned parser fallback + final code sanitizer"
-      : "header-aligned parser + candidate-column validation + price-volume fallback + final code sanitizer",
-    excludes: ["ETF", "ETN", "ELW", "invalid stock code rows"],
+      ? "KIS REST quote overlay + Naver header-aligned parser fallback + final response sanitizer"
+      : "header-aligned parser + candidate-column validation + price-volume fallback + final response sanitizer",
+    excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "unverified trading value rows"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
     overviewCacheMs: OVERVIEW_CACHE_MS,
@@ -287,7 +318,7 @@ app.get("/api/sectors/:id", async (request, response) => {
 });
 
 app.post("/api/volume-profile", (request, response) => {
-  const stocks = sortStocksByTradingValue((request.body?.stocks || []).filter((stock) => isValidStockCode(stock?.code)));
+  const stocks = sortStocksByTradingValue((request.body?.stocks || []).filter((stock) => isValidStockCode(stock?.code) && isVerifiedTradingValueStock(stock)));
   const limit = Number(request.body?.limit || 12);
   const items = stocks.slice(0, limit).map((stock) => ({
     code: stock.code,
@@ -352,6 +383,6 @@ app.listen(PORT, () => {
   console.log(`Moneyboard sanitized local server listening on http://localhost:${PORT}`);
   console.log(`Provider: ${KIS_ENABLED ? "KIS Open API + Naver Finance fallback" : "Naver Finance only. KIS is disabled."}`);
   console.log(`KIS status: ${JSON.stringify(getKisStatus())}`);
-  console.log("Ranking basis: validated daily trading value. ETF/ETN/ELW/invalid-code rows excluded.");
+  console.log("Ranking basis: validated daily trading value. ETF/ETN/ELW/invalid-code/unverified rows excluded.");
   console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
 });
