@@ -23,53 +23,52 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { loadReaderMarket, loadReaderSector, loadReaderVolumeProfile } from "./naverReader";
 
 const currencyFormatter = new Intl.NumberFormat("ko-KR");
 const percentFormatter = new Intl.NumberFormat("ko-KR", {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2
 });
-const staticDataBase = import.meta.env.BASE_URL || "/";
+
+const staticDataBase = import.meta.env.BASE_URL || "./";
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port) && !window.location.hostname.endsWith("github.io");
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
 const apiFallbackPollMs = 30_000;
-const pagesLiveSuccessDelayMs = 0;
-const pagesLiveFailureRetryMs = 15_000;
+const staticFallbackPollMs = 60_000;
+const volumeHistoryLimit = 12;
+
 const volumePeriods = [
   { id: "day", label: "일일" },
   { id: "week", label: "주간" },
   { id: "month", label: "월간" }
 ];
 const volumePeriodLabels = Object.fromEntries(volumePeriods.map((period) => [period.id, period.label]));
-const volumeHistoryLimit = 12;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
 }
 
 function staticDataUrl(path) {
-  return `${staticDataBase}${path}`.replace(/\/{2,}/g, "/");
+  const base = staticDataBase.endsWith("/") ? staticDataBase : `${staticDataBase}/`;
+  return `${base}${path}`;
 }
 
 async function fetchJson(url) {
   const separator = url.includes("?") ? "&" : "?";
   const response = await fetch(`${url}${separator}t=${Date.now()}`);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
   return response.json();
 }
 
 async function postJson(url, body) {
   const response = await fetch(url, {
     method: "POST",
-    headers: {
-      "content-type": "application/json"
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
   });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${url}`);
   return response.json();
 }
 
@@ -81,93 +80,57 @@ function loadStaticSector(id) {
   return fetchJson(staticDataUrl(`data/sectors/${id}.json`));
 }
 
-async function loadLiveMarket({ forceReader = false } = {}) {
-  let apiError = null;
-
-  if (canUseApi) {
-    try {
-      return await fetchJson(apiUrl("/api/sectors"));
-    } catch (error) {
-      apiError = error;
-    }
-  }
-
-  try {
-    return await loadReaderMarket(forceReader);
-  } catch (readerError) {
-    throw apiError || readerError;
-  }
+async function loadLiveMarket() {
+  if (canUseApi) return fetchJson(apiUrl("/api/sectors"));
+  return loadStaticMarket();
 }
 
-async function loadLiveSector(sector, { forceReader = false } = {}) {
-  let apiError = null;
-
-  if (canUseApi) {
-    try {
-      return await fetchJson(apiUrl(`/api/sectors/${sector.id}`));
-    } catch (error) {
-      apiError = error;
-    }
-  }
-
-  try {
-    const data = await loadReaderSector(sector.id, sector, forceReader);
-    if ((data?.error || sector.stockCount > 0) && !data?.stocks?.length) {
-      throw new Error(data?.error || "Empty sector detail");
-    }
-    return data;
-  } catch (readerError) {
-    throw apiError || readerError;
-  }
+async function loadLiveSector(sector) {
+  if (canUseApi) return fetchJson(apiUrl(`/api/sectors/${sector.id}`));
+  return loadStaticSector(sector.id);
 }
 
-async function loadLiveVolumeProfile(stocks, { forceReader = false, limit = volumeHistoryLimit } = {}) {
+async function loadLiveVolumeProfile(stocks, { limit = volumeHistoryLimit } = {}) {
   if (canUseApi) {
-    try {
-      return await postJson(apiUrl("/api/volume-profile"), {
-        stocks: (stocks || []).slice(0, limit),
-        limit
-      });
-    } catch {
-      // Fall through to the client reader/static data path.
-    }
+    return postJson(apiUrl("/api/volume-profile"), {
+      stocks: (stocks || []).slice(0, limit),
+      limit
+    });
   }
 
-  return loadReaderVolumeProfile(stocks, {
-    force: forceReader,
-    limit
-  });
+  return (
+    buildStaticVolumeProfile((stocks || []).slice(0, limit)) || {
+      sampleSize: 0,
+      limit,
+      byCode: {},
+      counts: { day: 0, week: 0, month: 0 },
+      totals: { day: 0, week: 0, month: 0 },
+      updatedAt: new Date().toISOString()
+    }
+  );
 }
 
 function formatTradingValue(millionWon = 0) {
-  if (millionWon >= 100_000) {
-    return `${percentFormatter.format(millionWon / 100_000)}조`;
-  }
-  if (millionWon >= 100) {
-    return `${percentFormatter.format(millionWon / 100)}억`;
-  }
-  return `${currencyFormatter.format(Math.round(millionWon))}백만`;
+  if (millionWon >= 100_000) return `${percentFormatter.format(millionWon / 100_000)}조`;
+  if (millionWon >= 100) return `${percentFormatter.format(millionWon / 100)}억`;
+  return `${currencyFormatter.format(Math.round(millionWon || 0))}백만`;
 }
 
 function formatNumber(value = 0) {
-  return currencyFormatter.format(Math.round(value));
+  return currencyFormatter.format(Math.round(value || 0));
 }
 
 function formatVolume(value) {
   if (value === null || value === undefined) return "-";
-  const rounded = Math.round(value);
-  if (rounded >= 100_000_000) {
-    return `${percentFormatter.format(rounded / 100_000_000)}억주`;
-  }
-  if (rounded >= 10_000) {
-    return `${percentFormatter.format(rounded / 10_000)}만주`;
-  }
+  const rounded = Math.round(value || 0);
+  if (rounded >= 100_000_000) return `${percentFormatter.format(rounded / 100_000_000)}억주`;
+  if (rounded >= 10_000) return `${percentFormatter.format(rounded / 10_000)}만주`;
   return `${currencyFormatter.format(rounded)}주`;
 }
 
 function formatPercent(value = 0) {
   const sign = value > 0 ? "+" : "";
-  return `${sign}${percentFormatter.format(value)}%`;
+  return `${sign}${percentFormatter.format(value || 0)}%`;
 }
 
 function changeClass(value = 0) {
@@ -176,195 +139,17 @@ function changeClass(value = 0) {
   return "neutral";
 }
 
-function shortName(name) {
+function shortName(name = "") {
   return name.length > 8 ? `${name.slice(0, 8)}...` : name;
 }
 
-function useMarketStream() {
-  const [snapshot, setSnapshot] = useState(null);
-  const [streamState, setStreamState] = useState("connecting");
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let closed = false;
-    let fallbackTimer;
-    let fallbackLoopStarted = false;
-
-    const loadPagesLiveSnapshot = async () => {
-      try {
-        const data = await loadLiveMarket({ forceReader: true });
-        if (!closed) {
-          setSnapshot(data);
-          setStreamState("live");
-          setError("");
-        }
-        return pagesLiveSuccessDelayMs;
-      } catch (liveError) {
-        try {
-          const data = await loadStaticMarket();
-          if (!closed) {
-            setSnapshot(data);
-            setStreamState("polling");
-            setError(`실시간 수집 재시도 중: ${liveError.message}`);
-          }
-        } catch (staticError) {
-          if (!closed) {
-            setStreamState("offline");
-            setError(staticError.message || liveError.message);
-          }
-        }
-
-        return pagesLiveFailureRetryMs;
-      }
-    };
-
-    const loadStaticPreview = async () => {
-      try {
-        const data = await loadStaticMarket();
-        if (!closed) {
-          setSnapshot((current) => current || data);
-          setStreamState((current) => (current === "connecting" ? "static" : current));
-          setError("실시간 수집 준비 중");
-        }
-      } catch {
-        // The live reader path will surface a useful error if both paths fail.
-      }
-    };
-
-    const loadFallback = async ({ forceReader = false } = {}) => {
-      try {
-        const data = await loadLiveMarket({ forceReader });
-        if (!closed) {
-          setSnapshot(data);
-          setStreamState("live");
-          setError("");
-        }
-      } catch (apiError) {
-        try {
-          const data = await loadStaticMarket();
-          if (!closed) {
-            setSnapshot(data);
-            setStreamState("static");
-            setError("정적 스냅샷");
-          }
-        } catch (staticError) {
-          if (!closed) {
-            setStreamState("offline");
-            setError(staticError.message || apiError.message);
-          }
-        }
-      }
-    };
-
-    const startFallbackLoop = ({ forceReader = false, delayMs = apiFallbackPollMs } = {}) => {
-      if (fallbackLoopStarted) return;
-      fallbackLoopStarted = true;
-
-      const run = async () => {
-        await loadFallback({ forceReader });
-        if (!closed) {
-          fallbackTimer = window.setTimeout(run, delayMs);
-        }
-      };
-
-      void run();
-    };
-
-    if (!canUseApi) {
-      loadStaticPreview();
-
-      const run = async () => {
-        const nextDelayMs = await loadPagesLiveSnapshot();
-        if (!closed) {
-          fallbackTimer = window.setTimeout(run, nextDelayMs);
-        }
-      };
-
-      void run();
-      return () => {
-        closed = true;
-        clearTimeout(fallbackTimer);
-      };
-    }
-
-    if (!("EventSource" in window)) {
-      loadStaticPreview();
-      startFallbackLoop();
-      return () => {
-        closed = true;
-        clearTimeout(fallbackTimer);
-      };
-    }
-
-    const stream = new EventSource(apiUrl("/api/stream"));
-
-    stream.addEventListener("open", () => {
-      if (!closed) setStreamState("live");
-    });
-
-    stream.addEventListener("market", (event) => {
-      if (!closed) {
-        setSnapshot(JSON.parse(event.data));
-        setStreamState("live");
-        setError("");
-      }
-    });
-
-    stream.addEventListener("error", () => {
-      if (!closed) {
-        setStreamState("polling");
-        startFallbackLoop();
-      }
-    });
-
-    return () => {
-      closed = true;
-      stream.close();
-      clearTimeout(fallbackTimer);
-    };
-  }, []);
-
-  return { snapshot, streamState, error };
-}
-
-function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
-  return (
-    <section className={`metric metric-${tone}`}>
-      <div className="metric-icon">
-        <Icon size={18} />
-      </div>
-      <div>
-        <p>{label}</p>
-        <strong>{value}</strong>
-        <span>{detail}</span>
-      </div>
-    </section>
-  );
-}
-
-function SectorRow({ sector, selected, maxValue, onSelect }) {
-  const width = maxValue ? Math.max(4, (sector.tradingValueMillion / maxValue) * 100) : 0;
-
-  return (
-    <button className={`sector-row ${selected ? "is-selected" : ""}`} onClick={() => onSelect(sector)}>
-      <span className="sector-rank">{sector.rank}</span>
-      <span className="sector-main">
-        <strong>{sector.name}</strong>
-        <span>{sector.stockCount}종목 · {sector.topStockName || "집계 중"}</span>
-        <i style={{ width: `${width}%` }} />
-      </span>
-      <span className="sector-money">{formatTradingValue(sector.tradingValueMillion)}</span>
-      <span className={`sector-change ${changeClass(sector.weightedChangeRate || sector.changeRate)}`}>
-        {formatPercent(sector.weightedChangeRate || sector.changeRate)}
-      </span>
-    </button>
-  );
-}
-
-function stockPeriodVolume(stock, volumeProfile, period) {
-  if (period === "day") return stock.volume || 0;
-  const periodData = volumeProfile?.byCode?.[stock.code];
-  return periodData?.[period] ?? stock.periodVolumes?.[period] ?? null;
+function sortByVolume(sectors = []) {
+  return [...sectors].sort((left, right) => {
+    const rightVolume = right.volume || 0;
+    const leftVolume = left.volume || 0;
+    if (rightVolume !== leftVolume) return rightVolume - leftVolume;
+    return (right.tradingValueMillion || 0) - (left.tradingValueMillion || 0);
+  });
 }
 
 function buildStaticVolumeProfile(stocks) {
@@ -399,6 +184,158 @@ function buildStaticVolumeProfile(stocks) {
     },
     updatedAt: new Date().toISOString()
   };
+}
+
+function useMarketStream() {
+  const [snapshot, setSnapshot] = useState(null);
+  const [streamState, setStreamState] = useState("connecting");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let closed = false;
+    let fallbackTimer;
+    let stream;
+
+    const applySnapshot = (data, state = "live", message = "") => {
+      if (closed) return;
+      setSnapshot(data);
+      setStreamState(state);
+      setError(message);
+    };
+
+    const loadFallback = async () => {
+      try {
+        const data = await loadLiveMarket();
+        applySnapshot(data, canUseApi ? "polling" : "static", canUseApi ? "자동 갱신" : "정적 스냅샷");
+      } catch (apiError) {
+        try {
+          const data = await loadStaticMarket();
+          applySnapshot(data, "static", "정적 스냅샷");
+        } catch (staticError) {
+          if (!closed) {
+            setStreamState("offline");
+            setError(staticError.message || apiError.message);
+          }
+        }
+      }
+    };
+
+    const startFallbackLoop = (delayMs = canUseApi ? apiFallbackPollMs : staticFallbackPollMs) => {
+      const run = async () => {
+        await loadFallback();
+        if (!closed) fallbackTimer = window.setTimeout(run, delayMs);
+      };
+      void run();
+    };
+
+    if (!canUseApi || !("EventSource" in window)) {
+      startFallbackLoop();
+      return () => {
+        closed = true;
+        clearTimeout(fallbackTimer);
+      };
+    }
+
+    stream = new EventSource(apiUrl("/api/stream"));
+
+    stream.addEventListener("open", () => {
+      if (!closed) setStreamState("live");
+    });
+
+    stream.addEventListener("market", (event) => {
+      try {
+        applySnapshot(JSON.parse(event.data), "live", "실시간 갱신");
+      } catch (parseError) {
+        if (!closed) setError(parseError.message);
+      }
+    });
+
+    stream.addEventListener("error", () => {
+      if (!closed) {
+        setStreamState("polling");
+        setError("실시간 연결 재시도 중");
+      }
+    });
+
+    return () => {
+      closed = true;
+      clearTimeout(fallbackTimer);
+      stream?.close();
+    };
+  }, []);
+
+  return { snapshot, streamState, error };
+}
+
+function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
+  return (
+    <section className={`metric metric-${tone}`}>
+      <div className="metric-icon">
+        <Icon size={18} />
+      </div>
+      <div>
+        <p>{label}</p>
+        <strong>{value}</strong>
+        <span>{detail}</span>
+      </div>
+    </section>
+  );
+}
+
+function SectorCard({ sector, selected, maxVolume, onSelect }) {
+  const changeRate = sector.weightedChangeRate ?? sector.changeRate ?? 0;
+  const volumeWidth = maxVolume ? Math.max(6, ((sector.volume || 0) / maxVolume) * 100) : 0;
+  const topStocks = (sector.topStocks || []).slice(0, 3);
+
+  return (
+    <button className={`sector-card ${selected ? "is-selected" : ""}`} type="button" onClick={() => onSelect(sector)}>
+      <div className="sector-card-top">
+        <span className="sector-rank">#{sector.rank}</span>
+        <span className={`sector-card-change ${changeClass(changeRate)}`}>
+          {changeRate >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
+          {formatPercent(changeRate)}
+        </span>
+      </div>
+
+      <div className="sector-card-title">
+        <strong>{sector.name}</strong>
+        <span>{sector.stockCount || 0}종목 · {sector.topStockName || "상위 종목 집계 중"}</span>
+      </div>
+
+      <div className="sector-card-bars">
+        <div className="bar-label">
+          <span>거래량</span>
+          <strong>{formatVolume(sector.volume)}</strong>
+        </div>
+        <i style={{ width: `${volumeWidth}%` }} />
+      </div>
+
+      <div className="sector-card-meta">
+        <span>
+          <em>거래대금</em>
+          <strong>{formatTradingValue(sector.tradingValueMillion)}</strong>
+        </span>
+        <span>
+          <em>상승/하락</em>
+          <strong>{sector.risingCount || 0}/{sector.fallingCount || 0}</strong>
+        </span>
+      </div>
+
+      {topStocks.length > 0 && (
+        <div className="sector-stock-chips">
+          {topStocks.map((stock) => (
+            <span key={stock.code}>{stock.name}</span>
+          ))}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function stockPeriodVolume(stock, volumeProfile, period) {
+  if (period === "day") return stock.volume || 0;
+  const periodData = volumeProfile?.byCode?.[stock.code];
+  return periodData?.[period] ?? stock.periodVolumes?.[period] ?? null;
 }
 
 function StockTable({ stocks, volumeProfile }) {
@@ -463,7 +400,7 @@ function SectorDetail({
     .map((stock) => ({
       name: shortName(stock.name),
       거래량: stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0,
-      등락률: Number(stock.changeRate.toFixed(2))
+      등락률: Number((stock.changeRate || 0).toFixed(2))
     }))
     .filter((stock) => stock.거래량 > 0)
     .sort((left, right) => right.거래량 - left.거래량)
@@ -498,8 +435,14 @@ function SectorDetail({
 
       <div className="detail-stats">
         <div>
+          <span>거래량</span>
+          <strong>{formatVolume(detail?.volume || sector?.volume)}</strong>
+          <small>섹터 전체 합산</small>
+        </div>
+        <div>
           <span>거래대금</span>
           <strong>{formatTradingValue(detail?.tradingValueMillion || sector?.tradingValueMillion)}</strong>
+          <small>네이버 금융 기준</small>
         </div>
         <div>
           <span>{periodLabel} 거래량</span>
@@ -511,10 +454,7 @@ function SectorDetail({
           <strong className={changeClass(detail?.weightedChangeRate || sector?.weightedChangeRate)}>
             {formatPercent(detail?.weightedChangeRate || sector?.weightedChangeRate)}
           </strong>
-        </div>
-        <div>
-          <span>상승/하락</span>
-          <strong>{sector?.risingCount || 0}/{sector?.fallingCount || 0}</strong>
+          <small>상승/하락 {sector?.risingCount || 0}/{sector?.fallingCount || 0}</small>
         </div>
       </div>
 
@@ -552,77 +492,67 @@ export default function App() {
   const [volumeProfile, setVolumeProfile] = useState(null);
   const [volumeLoading, setVolumeLoading] = useState(false);
 
-  const rankedSectors = useMemo(() => {
-    return (snapshot?.sectors || []).map((sector, index) => ({ ...sector, rank: index + 1 }));
+  const volumeRankedSectors = useMemo(() => {
+    return sortByVolume(snapshot?.sectors || []).map((sector, index) => ({ ...sector, rank: index + 1 }));
   }, [snapshot]);
 
-  const defaultSector = rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
-  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
+  const defaultSector = volumeRankedSectors.find((sector) => sector.name !== "기타") || volumeRankedSectors[0];
+  const selectedSector = volumeRankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
 
   const filteredSectors = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    if (!keyword) return rankedSectors;
-    return rankedSectors.filter((sector) => {
+    if (!keyword) return volumeRankedSectors;
+    return volumeRankedSectors.filter((sector) => {
       const stockNames = (sector.topStocks || []).map((stock) => stock.name).join(" ");
       return `${sector.name} ${stockNames}`.toLowerCase().includes(keyword);
     });
-  }, [rankedSectors, query]);
+  }, [volumeRankedSectors, query]);
 
-  const maxTradingValue = rankedSectors[0]?.tradingValueMillion || 0;
-  const volumeProfileKey = useMemo(() => {
-    return (sectorDetail?.stocks || []).slice(0, volumeHistoryLimit).map((stock) => stock.code).join(",");
-  }, [sectorDetail?.stocks]);
-  const topChartData = rankedSectors.slice(0, 12).map((sector) => ({
+  const maxVolume = volumeRankedSectors[0]?.volume || 0;
+  const topChartData = volumeRankedSectors.slice(0, 12).map((sector) => ({
     name: shortName(sector.name),
-    거래대금: Math.round(sector.tradingValueMillion),
+    거래량: Math.round(sector.volume || 0),
     등락률: Number((sector.weightedChangeRate || sector.changeRate || 0).toFixed(2))
   }));
 
+  const volumeProfileKey = useMemo(() => {
+    return (sectorDetail?.stocks || []).slice(0, volumeHistoryLimit).map((stock) => stock.code).join(",");
+  }, [sectorDetail?.stocks]);
+
   useEffect(() => {
-    const topSectorId = (rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0])?.id;
-    const shouldFollowLiveTop = !manualSelection && snapshot?.mode === "pages-reader-live";
+    const topSectorId = (volumeRankedSectors.find((sector) => sector.name !== "기타") || volumeRankedSectors[0])?.id;
+    const shouldFollowLiveTop = !manualSelection && snapshot?.mode === "localhost-live";
 
     if (topSectorId && (!selectedId || (shouldFollowLiveTop && selectedId !== topSectorId))) {
       setSelectedId(topSectorId);
     }
-  }, [manualSelection, rankedSectors, selectedId, snapshot?.mode]);
+  }, [manualSelection, selectedId, snapshot?.mode, volumeRankedSectors]);
 
   useEffect(() => {
     if (!selectedSector?.id) return;
 
     let cancelled = false;
-    let timer;
+
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const data = await loadLiveSector(selectedSector, { forceReader: !canUseApi });
+        const data = await loadLiveSector(selectedSector);
         if (!cancelled) setSectorDetail(data);
-        return canUseApi ? apiFallbackPollMs : pagesLiveSuccessDelayMs;
       } catch {
         try {
           const data = await loadStaticSector(selectedSector.id);
           if (!cancelled) setSectorDetail(data);
         } catch {
-          if (!cancelled) setSectorDetail(null);
+          if (!cancelled) setSectorDetail({ ...selectedSector, stocks: selectedSector.topStocks || [] });
         }
-
-        return canUseApi ? apiFallbackPollMs : pagesLiveFailureRetryMs;
       } finally {
         if (!cancelled) setDetailLoading(false);
       }
     }
 
-    const run = async () => {
-      const nextDelayMs = await loadDetail();
-      if (!cancelled) {
-        timer = window.setTimeout(run, nextDelayMs);
-      }
-    };
-
-    void run();
+    void loadDetail();
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
   }, [selectedSector?.id]);
 
@@ -636,29 +566,21 @@ export default function App() {
 
     async function loadVolumeProfile() {
       setVolumeLoading(true);
-      const staticProfile = buildStaticVolumeProfile(sectorDetail.stocks);
-
       try {
-        if (!cancelled) setVolumeProfile(staticProfile);
-
-        const data = await loadLiveVolumeProfile(sectorDetail.stocks, {
-          forceReader: !canUseApi,
-          limit: volumeHistoryLimit
-        });
-        const staticCoverage = (staticProfile?.counts?.week || 0) + (staticProfile?.counts?.month || 0);
-        const liveCoverage = (data?.counts?.week || 0) + (data?.counts?.month || 0);
-
-        if (!cancelled && (!staticProfile || liveCoverage >= staticCoverage)) setVolumeProfile(data);
+        const data = await loadLiveVolumeProfile(sectorDetail.stocks, { limit: volumeHistoryLimit });
+        if (!cancelled) setVolumeProfile(data);
+      } catch {
+        if (!cancelled) setVolumeProfile(buildStaticVolumeProfile(sectorDetail.stocks));
       } finally {
         if (!cancelled) setVolumeLoading(false);
       }
     }
 
-    loadVolumeProfile();
+    void loadVolumeProfile();
     return () => {
       cancelled = true;
     };
-  }, [volumeProfileKey]);
+  }, [volumeProfileKey, sectorDetail?.stocks]);
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
   const updatedTime = snapshot?.updatedAt
@@ -668,6 +590,8 @@ export default function App() {
         second: "2-digit"
       }).format(new Date(snapshot.updatedAt))
     : "--:--:--";
+  const streamLabel =
+    streamState === "live" ? "LIVE" : streamState === "polling" ? "AUTO" : streamState === "static" ? "SNAPSHOT" : "OFFLINE";
 
   return (
     <main>
@@ -677,19 +601,11 @@ export default function App() {
             <BarChart3 size={22} />
             Moneyboard
           </span>
-          <h1>국내 섹터 거래대금 모니터</h1>
+          <h1>국내 섹터 거래량 모니터</h1>
         </div>
         <div className={`stream-pill ${streamState}`}>
           <Radio size={16} />
-          <span>
-            {streamState === "live"
-              ? "LIVE"
-              : streamState === "polling"
-                ? "AUTO"
-                : streamState === "static"
-                  ? "SNAPSHOT"
-                  : "OFFLINE"}
-          </span>
+          <span>{streamLabel}</span>
         </div>
       </header>
 
@@ -703,9 +619,9 @@ export default function App() {
         />
         <MetricCard
           icon={TrendingUp}
-          label="최대 유입 섹터"
-          value={rankedSectors[0]?.name || "집계 중"}
-          detail={rankedSectors[0] ? formatTradingValue(rankedSectors[0].tradingValueMillion) : "대기"}
+          label="최대 거래량 섹터"
+          value={volumeRankedSectors[0]?.name || "집계 중"}
+          detail={volumeRankedSectors[0] ? formatVolume(volumeRankedSectors[0].volume) : "대기"}
           tone="amber"
         />
         <MetricCard
@@ -718,25 +634,25 @@ export default function App() {
         <MetricCard icon={Clock3} label="최근 수신" value={updatedTime} detail={error || "자동 갱신"} />
       </section>
 
-      <section className="workspace">
-        <aside className="sector-panel">
-          <div className="panel-header">
+      <section className="workspace card-workspace">
+        <section className="sector-panel sector-card-panel">
+          <div className="panel-header sector-card-header">
             <div>
-              <span className="eyebrow">거래대금 랭킹</span>
-              <h2>섹터</h2>
+              <span className="eyebrow">거래량 랭킹</span>
+              <h2>섹터 카드</h2>
             </div>
             <div className="search-box">
               <Search size={16} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
             </div>
           </div>
-          <div className="sector-list">
+          <div className="sector-card-grid">
             {filteredSectors.map((sector) => (
-              <SectorRow
+              <SectorCard
                 key={sector.id}
                 sector={sector}
                 selected={sector.id === selectedSector?.id}
-                maxValue={maxTradingValue}
+                maxVolume={maxVolume}
                 onSelect={(nextSector) => {
                   setManualSelection(true);
                   setSelectedId(nextSector.id);
@@ -744,25 +660,21 @@ export default function App() {
               />
             ))}
           </div>
-        </aside>
+        </section>
 
         <section className="analysis-panel">
           <div className="chart-card">
             <div className="chart-title">
               <BarChart3 size={18} />
-              <span>상위 섹터 거래대금</span>
+              <span>거래량 상위 섹터</span>
             </div>
             <ResponsiveContainer width="100%" height={320}>
-              <BarChart
-                data={topChartData}
-                layout="vertical"
-                margin={{ top: 8, right: 14, bottom: 0, left: 8 }}
-              >
+              <BarChart data={topChartData} layout="vertical" margin={{ top: 8, right: 14, bottom: 0, left: 8 }}>
                 <CartesianGrid stroke="#e7e9ef" vertical={false} />
-                <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={formatTradingValue} />
+                <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={formatVolume} />
                 <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={118} />
-                <Tooltip formatter={(value) => formatTradingValue(value)} />
-                <Bar dataKey="거래대금" radius={[5, 5, 0, 0]}>
+                <Tooltip formatter={(value, name) => (name === "거래량" ? formatVolume(value) : `${value}%`)} />
+                <Bar dataKey="거래량" radius={[5, 5, 0, 0]}>
                   {topChartData.map((entry) => (
                     <Cell key={entry.name} fill={entry.등락률 >= 0 ? "#2f7d68" : "#c94f4f"} />
                   ))}
@@ -772,17 +684,13 @@ export default function App() {
           </div>
 
           <div className="insight-strip">
-            {rankedSectors.slice(0, 3).map((sector) => (
+            {volumeRankedSectors.slice(0, 3).map((sector) => (
               <article key={sector.id}>
                 <span>{sector.rank}</span>
                 <strong>{sector.name}</strong>
-                <small>{formatTradingValue(sector.tradingValueMillion)}</small>
+                <small>{formatVolume(sector.volume)} · {formatTradingValue(sector.tradingValueMillion)}</small>
                 <em className={changeClass(sector.weightedChangeRate || sector.changeRate)}>
-                  {(sector.weightedChangeRate || sector.changeRate) >= 0 ? (
-                    <ArrowUpRight size={15} />
-                  ) : (
-                    <ArrowDownRight size={15} />
-                  )}
+                  {(sector.weightedChangeRate || sector.changeRate) >= 0 ? <ArrowUpRight size={15} /> : <ArrowDownRight size={15} />}
                   {formatPercent(sector.weightedChangeRate || sector.changeRate)}
                 </em>
               </article>
@@ -802,8 +710,7 @@ export default function App() {
       </section>
 
       <footer>
-        데이터는 네이버 금융 업종별 시세를 기반으로 자동 집계하며, 국내 증시 기본 데이터 제공처는 KRX로 표시됩니다.
-        투자 판단 전 원천 데이터를 확인하세요.
+        데이터는 네이버 금융 업종별 시세를 기반으로 로컬 서버에서 자동 집계합니다. KIS API는 사용하지 않으며, 투자 판단 전 원천 데이터를 확인하세요.
       </footer>
     </main>
   );
