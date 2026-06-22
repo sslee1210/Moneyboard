@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "server": "set STREAM_PUSH_MS=2000&& set MARKET_CACHE_MS=10000&& set DETAIL_CACHE_MS=30000&& set DETAIL_CONCURRENCY=8&& set KIS_MARKET_VERIFY_TOP_SECTORS=0&& set KIS_MARKET_VERIFY_TOP_STOCKS=0&& set KIS_REALTIME_SCOPE=all&& set KIS_REALTIME_MAX_CODES=5000&& set KIS_REALTIME_TOP_SECTORS=999&& set KIS_REALTIME_TOP_STOCKS=999&& node server-local.js",
+    "server": "set STREAM_PUSH_MS=2000&& set MARKET_CACHE_MS=10000&& set DETAIL_CACHE_MS=30000&& set DETAIL_CONCURRENCY=8&& set KIS_MARKET_VERIFY_TOP_SECTORS=0&& set KIS_MARKET_VERIFY_TOP_STOCKS=0&& set KIS_SELECTED_SECTOR_STOCKS=999&& set KIS_NUMERIC_SOURCE=api-only&& set KIS_REALTIME_SCOPE=all&& set KIS_REALTIME_MAX_CODES=5000&& set KIS_REALTIME_TOP_SECTORS=999&& set KIS_REALTIME_TOP_STOCKS=999&& node server-local.js",
     "server:raw": "node server.js",
     "snapshot": "node scripts/generate-static-data.mjs",
     "validate:data": "node scripts/generate-static-data.mjs",
