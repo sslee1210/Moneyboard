@@ -4,6 +4,7 @@ const port = Number(process.env.PORT || 4173);
 const baseUrl = (process.env.MONEYBOARD_BASE_URL || `http://localhost:${port}`).replace(/\/$/, "");
 const startupTimeoutMs = Number(process.env.MONEYBOARD_STARTUP_TIMEOUT_MS || 120_000);
 const serverEntry = process.env.MONEYBOARD_SERVER_ENTRY || "server-local.js";
+const acceptedModes = new Set(["localhost-live", "localhost-live-sanitized"]);
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -26,15 +27,15 @@ async function waitForServer() {
   while (Date.now() - startedAt < startupTimeoutMs) {
     try {
       const provider = await readProvider();
-      if (provider.mode === "localhost-live-sanitized") return provider;
-      lastError = `/api/provider responded, but mode is ${provider.mode}. Expected localhost-live-sanitized. Check that no old server is already using port ${port}.`;
+      if (acceptedModes.has(provider.mode)) return provider;
+      lastError = `/api/provider responded, but mode is ${provider.mode}. Check that no unrelated server is already using port ${port}.`;
     } catch (error) {
       lastError = error.message;
     }
     await wait(1_000);
   }
 
-  throw new Error(`Moneyboard sanitized server did not become ready at ${baseUrl}. Last error: ${lastError}`);
+  throw new Error(`Moneyboard server did not become ready at ${baseUrl}. Last error: ${lastError}`);
 }
 
 function runNodeScript(script, env) {
@@ -61,7 +62,7 @@ const env = {
   MONEYBOARD_BASE_URL: baseUrl
 };
 
-console.log(`Starting Moneyboard sanitized local test server at ${baseUrl}`);
+console.log(`Starting Moneyboard local test server at ${baseUrl}`);
 console.log(`Server entry: ${serverEntry}`);
 const server = spawn(process.execPath, [serverEntry], {
   stdio: ["ignore", "pipe", "pipe"],
