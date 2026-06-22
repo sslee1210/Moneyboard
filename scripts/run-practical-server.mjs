@@ -2,29 +2,33 @@ import { spawn } from "node:child_process";
 
 const PORT = Number(process.env.PORT || 4173);
 const BASE_URL = process.env.MONEYBOARD_BASE_URL || `http://localhost:${PORT}`;
-const MONITOR_INTERVAL_MS = Math.max(5_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 15_000));
-const SNAPSHOT_TIMEOUT_MS = Math.max(30_000, Number(process.env.MONEYBOARD_SNAPSHOT_TIMEOUT_MS || 180_000));
+const MONITOR_INTERVAL_MS = Math.max(10_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 30_000));
+const SNAPSHOT_TIMEOUT_MS = Math.max(60_000, Number(process.env.MONEYBOARD_SNAPSHOT_TIMEOUT_MS || 300_000));
 
 const serverEnv = {
   ...process.env,
   STREAM_PUSH_MS: process.env.STREAM_PUSH_MS || "2000",
-  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "30000",
-  DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "30000",
-  DETAIL_CONCURRENCY: process.env.DETAIL_CONCURRENCY || "8",
+  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "60000",
+  DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "60000",
+  DETAIL_CONCURRENCY: process.env.DETAIL_CONCURRENCY || "6",
+  KIS_REQUEST_TIMEOUT_MS: process.env.KIS_REQUEST_TIMEOUT_MS || "12000",
+  KIS_QUOTE_CACHE_MS: process.env.KIS_QUOTE_CACHE_MS || "60000",
   KIS_MARKET_VERIFY_TOP_SECTORS: process.env.KIS_MARKET_VERIFY_TOP_SECTORS || "0",
   KIS_MARKET_VERIFY_TOP_STOCKS: process.env.KIS_MARKET_VERIFY_TOP_STOCKS || "0",
   KIS_SELECTED_SECTOR_STOCKS: process.env.KIS_SELECTED_SECTOR_STOCKS || "0",
   KIS_NUMERIC_SOURCE: process.env.KIS_NUMERIC_SOURCE || "api-only",
   KIS_REST_BACKFILL_ENABLED: process.env.KIS_REST_BACKFILL_ENABLED || "true",
   KIS_REST_BACKFILL_MAX_CODES: process.env.KIS_REST_BACKFILL_MAX_CODES || "3000",
-  KIS_REST_BACKFILL_BATCH_SIZE: process.env.KIS_REST_BACKFILL_BATCH_SIZE || "2",
-  KIS_REST_BACKFILL_INTERVAL_MS: process.env.KIS_REST_BACKFILL_INTERVAL_MS || "500",
+  KIS_REST_BACKFILL_BATCH_SIZE: process.env.KIS_REST_BACKFILL_BATCH_SIZE || "1",
+  KIS_REST_BACKFILL_INTERVAL_MS: process.env.KIS_REST_BACKFILL_INTERVAL_MS || "1400",
   KIS_REALTIME_MAX_CODES: process.env.KIS_REALTIME_MAX_CODES || "40"
 };
 
 let monitorTimer = null;
 let primingStarted = false;
 let lastCoverage = -1;
+let lastValidation = null;
+let validationTimer = 0;
 
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -71,6 +75,9 @@ async function waitForServer() {
     try {
       const provider = await fetchJson("/api/provider", 3_000);
       console.log(`[doctor ${now()}] provider=${provider.provider} mode=${provider.mode} kis=${provider.kis?.enabled ? provider.kis.env : "off"}`);
+      console.log(
+        `[doctor ${now()}] KIS REST throttle: batch=${serverEnv.KIS_REST_BACKFILL_BATCH_SIZE}, interval=${serverEnv.KIS_REST_BACKFILL_INTERVAL_MS}ms, timeout=${serverEnv.KIS_REQUEST_TIMEOUT_MS}ms`
+      );
       return true;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
@@ -94,12 +101,24 @@ async function primeSnapshot() {
   }
 }
 
+async function getValidationSnapshot() {
+  const nowMs = Date.now();
+  if (lastValidation && nowMs - validationTimer < 60_000) return lastValidation;
+  try {
+    lastValidation = await fetchJson("/api/validation", 90_000);
+    validationTimer = nowMs;
+    return lastValidation;
+  } catch (error) {
+    return lastValidation || { status: "warning", error: compactError(error.message) };
+  }
+}
+
 async function printDiagnostics() {
   try {
     const [backfill, realtime, validation] = await Promise.all([
-      fetchJson("/api/backfill/status", 8_000),
-      fetchJson("/api/realtime/status", 8_000),
-      fetchJson("/api/validation", 30_000).catch((error) => ({ status: "warning", error: error.message }))
+      fetchJson("/api/backfill/status", 15_000),
+      fetchJson("/api/realtime/status", 15_000),
+      getValidationSnapshot()
     ]);
 
     const coverage = Number(backfill.coverageRate || 0);
