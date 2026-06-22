@@ -1,0 +1,405 @@
+/* Moneyboard readability tune
+   Loaded after the main dashboard CSS to improve contrast, font size, and visual hierarchy. */
+
+:root {
+  --mb-bg: #0b1118;
+  --mb-surface: #141f2b;
+  --mb-panel: #182536;
+  --mb-panel-2: #111a25;
+  --mb-line: #33475c;
+  --mb-line-soft: #27384a;
+  --mb-text: #eef6fc;
+  --mb-muted: #b3c2cf;
+  --mb-faint: #8fa1b1;
+  --mb-buy: #ff5c5c;
+  --mb-sell: #65a3ff;
+  --mb-accent: #36d6bd;
+  --mb-amber: #ffd56a;
+}
+
+html {
+  background: var(--mb-bg);
+}
+
+body {
+  background:
+    radial-gradient(circle at 15% -8%, rgba(54, 214, 189, 0.08), transparent 28%),
+    radial-gradient(circle at 92% 0%, rgba(101, 163, 255, 0.07), transparent 30%),
+    var(--mb-bg) !important;
+  color: var(--mb-text) !important;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+main,
+.moneyboard-app {
+  width: min(1540px, calc(100vw - 32px)) !important;
+  padding: 20px 0 32px !important;
+}
+
+.app-header {
+  min-height: 68px !important;
+  padding: 10px 2px 16px !important;
+  border-bottom-color: var(--mb-line) !important;
+}
+
+.brand {
+  color: var(--mb-accent) !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+}
+
+h1 {
+  color: #ffffff !important;
+  font-size: clamp(28px, 2.15vw, 38px) !important;
+  line-height: 1.16 !important;
+  letter-spacing: -0.035em !important;
+}
+
+.stream-pill {
+  min-width: 86px;
+  height: 36px !important;
+  border-color: var(--mb-line) !important;
+  background: #111a25 !important;
+  color: var(--mb-muted) !important;
+  font-size: 13px !important;
+  font-weight: 950 !important;
+}
+
+.metrics-grid {
+  gap: 12px !important;
+  margin-top: 14px !important;
+}
+
+.metric {
+  min-height: 96px !important;
+  padding: 16px !important;
+  border-color: var(--mb-line) !important;
+  border-radius: 10px !important;
+  background: linear-gradient(180deg, #182536, #121c28) !important;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.24) !important;
+}
+
+.metric-icon {
+  width: 34px !important;
+  height: 34px !important;
+  flex-basis: 34px !important;
+  border-radius: 8px !important;
+  background: #203246 !important;
+  color: var(--mb-accent) !important;
+}
+
+.metric p,
+.eyebrow,
+.metric span,
+footer,
+.rank-main span,
+.rank-sub,
+.selected-sector-stats span,
+.selected-sector-stats small,
+.leader-item small,
+.stock-table td:nth-child(2) span {
+  color: var(--mb-muted) !important;
+}
+
+.metric p,
+.eyebrow {
+  font-size: 12px !important;
+  letter-spacing: 0.045em !important;
+}
+
+.metric strong {
+  color: #ffffff !important;
+  font-size: clamp(21px, 1.55vw, 28px) !important;
+  line-height: 1.18 !important;
+}
+
+.metric span {
+  font-size: 12.5px !important;
+  line-height: 1.45 !important;
+}
+
+.terminal-panel,
+.sector-panel,
+.analysis-panel,
+.detail-panel,
+.chart-card {
+  border-color: var(--mb-line) !important;
+  border-radius: 10px !important;
+  background: rgba(20, 31, 43, 0.98) !important;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.22) !important;
+}
+
+.panel-header {
+  min-height: 66px !important;
+  padding: 15px 17px !important;
+  border-bottom-color: var(--mb-line) !important;
+  background: linear-gradient(180deg, #172332, #111a25) !important;
+}
+
+.panel-header h2 {
+  color: #ffffff !important;
+  font-size: 18px !important;
+  line-height: 1.25 !important;
+  font-weight: 950 !important;
+}
+
+.search-box {
+  width: 250px !important;
+  height: 38px !important;
+  border-color: var(--mb-line) !important;
+  border-radius: 8px !important;
+  background: #0f1721 !important;
+}
+
+.search-box input {
+  color: var(--mb-text) !important;
+  font-size: 14px !important;
+  font-weight: 850 !important;
+}
+
+.ranking-grid,
+.sector-card-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr)) !important;
+  gap: 12px !important;
+  padding: 14px !important;
+}
+
+.rank-card,
+.sector-card {
+  min-height: 174px !important;
+  padding: 15px !important;
+  border: 1px solid var(--mb-line) !important;
+  border-radius: 10px !important;
+  background: linear-gradient(180deg, #172433, #121c28) !important;
+  color: var(--mb-text) !important;
+}
+
+.rank-card:hover,
+.rank-card.is-selected,
+.sector-card:hover,
+.sector-card.is-selected {
+  border-color: rgba(54, 214, 189, 0.72) !important;
+  background: linear-gradient(180deg, #1b2c3f, #162333) !important;
+  box-shadow: inset 0 0 0 1px rgba(54, 214, 189, 0.18), 0 14px 32px rgba(0, 0, 0, 0.2) !important;
+}
+
+.rank-number,
+.sector-rank,
+.leader-rank,
+.sector-stock-rank {
+  background: #24374a !important;
+  color: #d7e5ef !important;
+  font-family: "Roboto Mono", "Consolas", monospace !important;
+  font-weight: 950 !important;
+}
+
+.rank-sector-name,
+.sector-card-title strong,
+.leader-item strong,
+.stock-table td:nth-child(2) a,
+.chart-title,
+.insight-strip strong {
+  color: #ffffff !important;
+}
+
+.rank-sector-name,
+.sector-card-title strong {
+  font-size: 18px !important;
+  line-height: 1.35 !important;
+  letter-spacing: -0.025em !important;
+  word-break: keep-all !important;
+}
+
+.rank-main strong,
+.bar-label strong,
+.sector-card-meta strong,
+.selected-sector-stats strong,
+.sector-stock-volume-top strong {
+  color: #ffffff !important;
+  font-family: "Roboto Mono", "Consolas", monospace !important;
+  font-weight: 950 !important;
+}
+
+.rank-main strong {
+  font-size: 18px !important;
+}
+
+.rank-main span,
+.rank-sub,
+.bar-label span,
+.sector-card-meta em {
+  font-size: 12px !important;
+  font-weight: 900 !important;
+}
+
+.rank-bar,
+.sector-stock-volume-bar,
+.sector-stock-flow-bar {
+  background: #243245 !important;
+}
+
+.rank-bar {
+  height: 7px !important;
+}
+
+.rank-bar i,
+.sector-card-bars i {
+  background: linear-gradient(90deg, var(--mb-accent), #7bb7ff) !important;
+}
+
+.below-ranking {
+  gap: 14px !important;
+  margin-top: 14px !important;
+}
+
+.top-volume-body {
+  gap: 14px !important;
+  padding: 15px !important;
+}
+
+.leader-item {
+  border-color: var(--mb-line) !important;
+  border-radius: 9px !important;
+  background: #111a25 !important;
+}
+
+.selected-sector-stats div {
+  padding: 18px !important;
+  background: #111a25 !important;
+  border-bottom-color: var(--mb-line) !important;
+}
+
+.selected-sector-stats strong {
+  font-size: 25px !important;
+}
+
+.selected-stock-panel {
+  margin-top: 14px !important;
+}
+
+.selected-stock-content {
+  grid-template-columns: minmax(0, 1.35fr) minmax(420px, 0.65fr) !important;
+}
+
+.stock-table-wrap,
+.table-wrap {
+  background: #111a25 !important;
+}
+
+.stock-table th,
+.stock-table td,
+th,
+td {
+  padding: 12px 14px !important;
+  border-bottom-color: var(--mb-line-soft) !important;
+  color: var(--mb-text) !important;
+  font-size: 13.5px !important;
+  line-height: 1.45 !important;
+}
+
+.stock-table th,
+th {
+  background: #0f1721 !important;
+  color: #aebdcc !important;
+  font-size: 11.5px !important;
+  font-weight: 950 !important;
+}
+
+.stock-table td:nth-child(2) a,
+td:first-child a {
+  font-size: 14px !important;
+  line-height: 1.35 !important;
+}
+
+.flow-chip {
+  min-width: 152px !important;
+  height: 28px !important;
+  border-color: var(--mb-line) !important;
+  background: #101923 !important;
+  font-size: 11.5px !important;
+}
+
+.stock-chart {
+  background: #121c28 !important;
+}
+
+.chart-title {
+  font-size: 15px !important;
+}
+
+.positive {
+  color: var(--mb-buy) !important;
+  font-weight: 950 !important;
+}
+
+.negative {
+  color: var(--mb-sell) !important;
+  font-weight: 950 !important;
+}
+
+.neutral {
+  color: var(--mb-muted) !important;
+}
+
+.rank-star.gold {
+  color: var(--mb-amber) !important;
+}
+
+.rank-star.silver {
+  color: #ffffff !important;
+}
+
+.empty-state {
+  background: #141f2b !important;
+}
+
+.empty-state p {
+  color: var(--mb-muted) !important;
+  font-size: 15px !important;
+}
+
+footer {
+  font-size: 13px !important;
+  line-height: 1.6 !important;
+}
+
+@media (max-width: 1360px) {
+  .ranking-grid,
+  .sector-card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  }
+
+  .selected-stock-content,
+  .below-ranking {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 900px) {
+  main,
+  .moneyboard-app {
+    width: min(100vw - 18px, 820px) !important;
+  }
+
+  .metrics-grid,
+  .ranking-grid,
+  .sector-card-grid,
+  .top-volume-body {
+    grid-template-columns: 1fr 1fr !important;
+  }
+}
+
+@media (max-width: 620px) {
+  .metrics-grid,
+  .ranking-grid,
+  .sector-card-grid,
+  .top-volume-body {
+    grid-template-columns: 1fr !important;
+  }
+
+  .search-box {
+    width: 100% !important;
+  }
+}
