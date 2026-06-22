@@ -1,0 +1,93 @@
+/* Live market overview strip */
+.market-overview-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.market-overview-card {
+  min-height: 118px;
+  padding: 13px;
+  border: 1px solid var(--mb-line);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #233242, var(--mb-panel));
+  overflow: hidden;
+}
+
+.market-overview-card.positive {
+  border-color: rgba(255, 101, 101, 0.5);
+}
+
+.market-overview-card.negative {
+  border-color: rgba(93, 162, 255, 0.5);
+}
+
+.market-overview-head,
+.market-overview-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.market-overview-head span {
+  color: var(--mb-strong);
+  font-size: 14px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+}
+
+.market-overview-head em {
+  color: var(--mb-faint);
+  font-family: "Roboto Mono", "Consolas", monospace;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 850;
+}
+
+.market-overview-main {
+  margin-top: 8px;
+}
+
+.market-overview-main strong {
+  color: var(--mb-strong);
+  font-family: "Roboto Mono", "Consolas", monospace;
+  font-size: 21px;
+  font-weight: 950;
+  letter-spacing: -0.04em;
+}
+
+.market-overview-main small {
+  font-family: "Roboto Mono", "Consolas", monospace;
+  font-size: 12px;
+  font-weight: 950;
+}
+
+.market-overview-chart {
+  height: 44px;
+  margin-top: 8px;
+}
+
+.market-overview-empty {
+  display: grid;
+  place-items: center;
+  height: 42px;
+  border: 1px dashed var(--mb-soft-line);
+  border-radius: 6px;
+  color: var(--mb-faint);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+@media (max-width: 1420px) {
+  .market-overview-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .market-overview-strip {
+    grid-template-columns: 1fr;
+  }
+}
