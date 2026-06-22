@@ -2,18 +2,18 @@ import { spawn } from "node:child_process";
 
 const PORT = Number(process.env.PORT || 4173);
 const BASE_URL = process.env.MONEYBOARD_BASE_URL || `http://localhost:${PORT}`;
-const MONITOR_INTERVAL_MS = Math.max(30_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 60_000));
+const MONITOR_INTERVAL_MS = Math.max(10_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 30_000));
 const SNAPSHOT_TIMEOUT_MS = Math.max(60_000, Number(process.env.MONEYBOARD_SNAPSHOT_TIMEOUT_MS || 180_000));
 const SERVER_ENTRY = process.env.MONEYBOARD_SERVER_ENTRY || "server-focus40.js";
 
 const serverEnv = {
   ...process.env,
-  STREAM_PUSH_MS: process.env.STREAM_PUSH_MS || "10000",
-  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "30000",
+  STREAM_PUSH_MS: process.env.STREAM_PUSH_MS || "3000",
+  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "15000",
   DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "30000",
   DETAIL_CONCURRENCY: process.env.DETAIL_CONCURRENCY || "8",
-  KIS_REQUEST_TIMEOUT_MS: process.env.KIS_REQUEST_TIMEOUT_MS || "20000",
-  KIS_QUOTE_CACHE_MS: process.env.KIS_QUOTE_CACHE_MS || "60000",
+  KIS_REQUEST_TIMEOUT_MS: process.env.KIS_REQUEST_TIMEOUT_MS || "12000",
+  KIS_QUOTE_CACHE_MS: process.env.KIS_QUOTE_CACHE_MS || "30000",
   KIS_MARKET_VERIFY_TOP_SECTORS: process.env.KIS_MARKET_VERIFY_TOP_SECTORS || "0",
   KIS_MARKET_VERIFY_TOP_STOCKS: process.env.KIS_MARKET_VERIFY_TOP_STOCKS || "0",
   KIS_SELECTED_SECTOR_STOCKS: process.env.KIS_SELECTED_SECTOR_STOCKS || "0",
@@ -21,8 +21,8 @@ const serverEnv = {
   KIS_FOCUS_SECTORS: process.env.KIS_FOCUS_SECTORS || "8",
   KIS_FOCUS_STOCKS_PER_SECTOR: process.env.KIS_FOCUS_STOCKS_PER_SECTOR || "5",
   KIS_FOCUS_MAX_CODES: process.env.KIS_FOCUS_MAX_CODES || "40",
-  KIS_FOCUS_BACKFILL_INTERVAL_MS: process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || "10000",
-  KIS_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_RATE_LIMIT_COOLDOWN_MS || "30000",
+  KIS_FOCUS_BACKFILL_INTERVAL_MS: process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || "2000",
+  KIS_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_RATE_LIMIT_COOLDOWN_MS || "15000",
   KIS_REALTIME_MAX_CODES: process.env.KIS_REALTIME_MAX_CODES || "40"
 };
 
@@ -77,7 +77,7 @@ async function waitForServer() {
       const focus = provider.focusPolicy || {};
       console.log(`[doctor ${now()}] provider=${provider.provider} mode=${provider.mode} kis=${provider.kis?.enabled ? provider.kis.env : "off"}`);
       console.log(
-        `[doctor ${now()}] focus=${focus.topSectors ?? serverEnv.KIS_FOCUS_SECTORS} sectors x ${focus.topStocksPerSector ?? serverEnv.KIS_FOCUS_STOCKS_PER_SECTOR} stocks, max=${focus.maxCodes ?? serverEnv.KIS_FOCUS_MAX_CODES}, REST interval=${serverEnv.KIS_FOCUS_BACKFILL_INTERVAL_MS}ms, cooldown=${serverEnv.KIS_RATE_LIMIT_COOLDOWN_MS}ms`
+        `[doctor ${now()}] focus=${focus.topSectors ?? serverEnv.KIS_FOCUS_SECTORS} sectors x ${focus.topStocksPerSector ?? serverEnv.KIS_FOCUS_STOCKS_PER_SECTOR} stocks, max=${focus.maxCodes ?? serverEnv.KIS_FOCUS_MAX_CODES}, REST interval=${serverEnv.KIS_FOCUS_BACKFILL_INTERVAL_MS}ms, cooldown=${serverEnv.KIS_RATE_LIMIT_COOLDOWN_MS}ms, stream=${serverEnv.STREAM_PUSH_MS}ms`
       );
       return true;
     } catch {
@@ -105,7 +105,7 @@ async function primeSnapshot() {
 
 async function getValidationSnapshot() {
   const nowMs = Date.now();
-  if (lastValidation && nowMs - validationTimer < 120_000) return lastValidation;
+  if (lastValidation && nowMs - validationTimer < 60_000) return lastValidation;
   try {
     lastValidation = await fetchJson("/api/validation", 90_000);
     validationTimer = nowMs;
@@ -118,8 +118,8 @@ async function getValidationSnapshot() {
 async function printDiagnostics() {
   try {
     const [backfill, realtime, validation] = await Promise.all([
-      fetchJson("/api/backfill/status", 15_000),
-      fetchJson("/api/realtime/status", 15_000),
+      fetchJson("/api/backfill/status", 10_000),
+      fetchJson("/api/realtime/status", 10_000),
       getValidationSnapshot()
     ]);
 
