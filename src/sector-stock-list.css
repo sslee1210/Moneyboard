@@ -1,3 +1,12 @@
+.sector-card.is-selected {
+  grid-column: span 2;
+  min-height: 420px;
+}
+
+.sector-card.is-selected .sector-stock-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .sector-stock-list {
   display: grid;
   gap: 7px;
@@ -6,13 +15,25 @@
 
 .sector-stock-row {
   display: grid;
-  grid-template-columns: minmax(72px, 0.92fr) minmax(96px, 1.08fr);
+  grid-template-columns: 24px minmax(72px, 0.88fr) minmax(96px, 1.12fr);
   gap: 8px;
   align-items: center;
   padding: 7px 8px;
   border: 1px solid rgba(223, 227, 223, 0.86);
   border-radius: 10px;
   background: rgba(248, 250, 248, 0.9);
+}
+
+.sector-stock-rank {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: #1d2228;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 950;
 }
 
 .sector-stock-name {
@@ -92,13 +113,21 @@
 }
 
 @media (max-width: 1480px) {
-  .sector-stock-row {
+  .sector-card.is-selected {
+    grid-column: span 1;
+  }
+
+  .sector-card.is-selected .sector-stock-list {
     grid-template-columns: 1fr;
+  }
+
+  .sector-stock-row {
+    grid-template-columns: 24px minmax(72px, 0.9fr) minmax(96px, 1.1fr);
   }
 }
 
-@media (max-width: 1080px) {
+@media (max-width: 760px) {
   .sector-stock-row {
-    grid-template-columns: minmax(84px, 0.9fr) minmax(110px, 1.1fr);
+    grid-template-columns: 24px minmax(72px, 0.9fr) minmax(96px, 1.1fr);
   }
 }
