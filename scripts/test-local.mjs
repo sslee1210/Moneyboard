@@ -3,9 +3,20 @@ import { spawn } from "node:child_process";
 const port = Number(process.env.PORT || 4173);
 const baseUrl = (process.env.MONEYBOARD_BASE_URL || `http://localhost:${port}`).replace(/\/$/, "");
 const startupTimeoutMs = Number(process.env.MONEYBOARD_STARTUP_TIMEOUT_MS || 120_000);
+const serverEntry = process.env.MONEYBOARD_SERVER_ENTRY || "server-local.js";
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readProvider() {
+  const response = await fetch(`${baseUrl}/api/provider`, {
+    headers: { accept: "application/json" },
+    signal: AbortSignal.timeout(3_000)
+  });
+
+  if (!response.ok) throw new Error(`/api/provider returned HTTP ${response.status}`);
+  return response.json();
 }
 
 async function waitForServer() {
@@ -14,19 +25,16 @@ async function waitForServer() {
 
   while (Date.now() - startedAt < startupTimeoutMs) {
     try {
-      const response = await fetch(`${baseUrl}/api/provider`, {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(3_000)
-      });
-      if (response.ok) return;
-      lastError = `/api/provider returned HTTP ${response.status}`;
+      const provider = await readProvider();
+      if (provider.mode === "localhost-live-sanitized") return provider;
+      lastError = `/api/provider responded, but mode is ${provider.mode}. Expected localhost-live-sanitized. Check that no old server is already using port ${port}.`;
     } catch (error) {
       lastError = error.message;
     }
     await wait(1_000);
   }
 
-  throw new Error(`Moneyboard server did not become ready at ${baseUrl}. Last error: ${lastError}`);
+  throw new Error(`Moneyboard sanitized server did not become ready at ${baseUrl}. Last error: ${lastError}`);
 }
 
 function runNodeScript(script, env) {
@@ -53,8 +61,9 @@ const env = {
   MONEYBOARD_BASE_URL: baseUrl
 };
 
-console.log(`Starting Moneyboard local test server at ${baseUrl}`);
-const server = spawn(process.execPath, ["server.js"], {
+console.log(`Starting Moneyboard sanitized local test server at ${baseUrl}`);
+console.log(`Server entry: ${serverEntry}`);
+const server = spawn(process.execPath, [serverEntry], {
   stdio: ["ignore", "pipe", "pipe"],
   env
 });
@@ -71,7 +80,8 @@ server.on("exit", (code) => {
 });
 
 try {
-  await waitForServer();
+  const provider = await waitForServer();
+  console.log(`Provider mode confirmed: ${provider.mode}`);
   if (serverExited) throw new Error("Moneyboard server exited before tests started.");
   await runNodeScript("scripts/test-live.mjs", env);
 } finally {
