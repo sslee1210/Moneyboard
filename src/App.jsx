@@ -61,6 +61,18 @@ async function fetchJson(url) {
   return response.json();
 }
 
+async function postJson(url, body) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json"
+    },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.json();
+}
+
 function loadStaticMarket() {
   return fetchJson(staticDataUrl("data/market.json"));
 }
@@ -107,6 +119,24 @@ async function loadLiveSector(sector, { forceReader = false } = {}) {
   } catch (readerError) {
     throw apiError || readerError;
   }
+}
+
+async function loadLiveVolumeProfile(stocks, { forceReader = false, limit = volumeHistoryLimit } = {}) {
+  if (canUseApi) {
+    try {
+      return await postJson(apiUrl("/api/volume-profile"), {
+        stocks: (stocks || []).slice(0, limit),
+        limit
+      });
+    } catch {
+      // Fall through to the client reader/static data path.
+    }
+  }
+
+  return loadReaderVolumeProfile(stocks, {
+    force: forceReader,
+    limit
+  });
 }
 
 function formatTradingValue(millionWon = 0) {
@@ -611,8 +641,8 @@ export default function App() {
       try {
         if (!cancelled) setVolumeProfile(staticProfile);
 
-        const data = await loadReaderVolumeProfile(sectorDetail.stocks, {
-          force: !canUseApi,
+        const data = await loadLiveVolumeProfile(sectorDetail.stocks, {
+          forceReader: !canUseApi,
           limit: volumeHistoryLimit
         });
         const staticCoverage = (staticProfile?.counts?.week || 0) + (staticProfile?.counts?.month || 0);

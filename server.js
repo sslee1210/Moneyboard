@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { enrichStocksWithKis, getKisQuote, getKisStatus, getKisVolumeProfile, isKisConfigured } from "./kisClient.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
@@ -11,6 +12,8 @@ const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
 const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 8);
+const KIS_DETAIL_QUOTE_LIMIT = Number(process.env.KIS_DETAIL_QUOTE_LIMIT || 20);
+const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -191,6 +194,40 @@ function parseSectorDetail(html, sector) {
   };
 }
 
+function recalculateSectorDetail(detail, stocks, provider = null) {
+  const tradingValueMillion = stocks.reduce((sum, stock) => sum + stock.tradeAmountMillion, 0);
+  const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
+  const weightedChangeRate =
+    tradingValueMillion > 0
+      ? stocks.reduce((sum, stock) => sum + stock.changeRate * stock.tradeAmountMillion, 0) /
+        tradingValueMillion
+      : detail.changeRate;
+
+  return {
+    ...detail,
+    tradingValueMillion,
+    volume,
+    weightedChangeRate,
+    topStocks: stocks.slice(0, 8),
+    stocks,
+    provider: provider || detail.provider || "Naver Finance",
+    fetchedAt: new Date().toISOString()
+  };
+}
+
+async function enrichSectorDetail(detail) {
+  if (!isKisConfigured()) return detail;
+  const stocks = await enrichStocksWithKis(detail.stocks, { limit: KIS_DETAIL_QUOTE_LIMIT });
+  return {
+    ...recalculateSectorDetail(detail, stocks, "KIS + Naver Finance"),
+    kis: {
+      enabled: true,
+      quoteLimit: KIS_DETAIL_QUOTE_LIMIT,
+      enrichedAt: new Date().toISOString()
+    }
+  };
+}
+
 async function mapLimit(items, limit, mapper) {
   const results = new Array(items.length);
   let cursor = 0;
@@ -207,8 +244,11 @@ async function mapLimit(items, limit, mapper) {
   return results;
 }
 
-async function getSectorDetail(sector, force = false) {
-  const cached = detailCache.get(sector.id);
+async function getSectorDetail(sector, options = false) {
+  const force = typeof options === "boolean" ? options : Boolean(options.force);
+  const enrichKis = typeof options === "object" && Boolean(options.enrichKis);
+  const cacheKey = enrichKis ? `${sector.id}:kis` : sector.id;
+  const cached = detailCache.get(cacheKey);
   if (!force && cached?.data && cached.expiresAt > Date.now()) {
     return cached.data;
   }
@@ -218,8 +258,9 @@ async function getSectorDetail(sector, force = false) {
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
     .then((html) => parseSectorDetail(html, sector))
+    .then((data) => (enrichKis ? enrichSectorDetail(data) : data))
     .then((data) => {
-      detailCache.set(sector.id, {
+      detailCache.set(cacheKey, {
         data,
         expiresAt: Date.now() + DETAIL_CACHE_MS,
         promise: null
@@ -227,7 +268,7 @@ async function getSectorDetail(sector, force = false) {
       return data;
     })
     .catch((error) => {
-      detailCache.set(sector.id, {
+      detailCache.set(cacheKey, {
         data: cached?.data || {
           ...sector,
           tradingValueMillion: 0,
@@ -241,10 +282,10 @@ async function getSectorDetail(sector, force = false) {
         expiresAt: Date.now() + Math.min(DETAIL_CACHE_MS, 10_000),
         promise: null
       });
-      return detailCache.get(sector.id).data;
+      return detailCache.get(cacheKey).data;
     });
 
-  detailCache.set(sector.id, {
+  detailCache.set(cacheKey, {
     data: cached?.data,
     expiresAt: cached?.expiresAt || 0,
     promise
@@ -363,6 +404,27 @@ app.get("/api/health", (_, response) => {
   response.json({ ok: true, now: new Date().toISOString() });
 });
 
+app.get("/api/provider", (_, response) => {
+  response.json({
+    market: "Naver Finance",
+    sectorDetail: isKisConfigured() ? "KIS + Naver Finance" : "Naver Finance",
+    volumeProfile: isKisConfigured() ? "KIS" : "static/client-fallback",
+    kis: getKisStatus()
+  });
+});
+
+app.get("/api/kis/quote/:code", async (request, response) => {
+  try {
+    response.json(await getKisQuote(request.params.code));
+  } catch (error) {
+    response.status(isKisConfigured() ? 502 : 503).json({
+      message: "Failed to load KIS quote",
+      error: error.message,
+      kis: getKisStatus()
+    });
+  }
+});
+
 app.get("/api/sectors", async (_, response) => {
   try {
     response.json(await getMarketSnapshot());
@@ -384,11 +446,33 @@ app.get("/api/sectors/:id", async (request, response) => {
       return;
     }
 
-    response.json(await getSectorDetail(sector, true));
+    response.json(await getSectorDetail(sector, { force: true, enrichKis: true }));
   } catch (error) {
     response.status(502).json({
       message: "Failed to load sector detail",
       error: error.message
+    });
+  }
+});
+
+app.post("/api/volume-profile", async (request, response) => {
+  try {
+    if (!isKisConfigured()) {
+      response.status(503).json({
+        message: "KIS is not configured",
+        kis: getKisStatus()
+      });
+      return;
+    }
+
+    const stocks = Array.isArray(request.body?.stocks) ? request.body.stocks : [];
+    const limit = Number(request.body?.limit || VOLUME_HISTORY_LIMIT);
+    response.json(await getKisVolumeProfile(stocks, { limit }));
+  } catch (error) {
+    response.status(502).json({
+      message: "Failed to load KIS volume profile",
+      error: error.message,
+      kis: getKisStatus()
     });
   }
 });
