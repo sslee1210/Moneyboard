@@ -1,4 +1,4 @@
-/* Final Moneyboard layout: readable 4 x 3 trading-value dashboard. */
+/* Focus-40 Moneyboard layout: readable 4 x 2 trading-value dashboard. */
 :root {
   --mb-bg: #101922;
   --mb-panel: #1b2a38;
@@ -95,11 +95,8 @@ h1 {
   color: var(--mb-accent);
 }
 
-.stream-pill.offline {
-  color: var(--mb-up);
-}
+.stream-pill.offline { color: var(--mb-up); }
 
-/* Top market overview */
 .market-overview-strip {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -116,13 +113,8 @@ h1 {
   overflow: hidden;
 }
 
-.market-overview-card.positive {
-  border-color: rgba(255, 117, 117, 0.72);
-}
-
-.market-overview-card.negative {
-  border-color: rgba(116, 180, 255, 0.72);
-}
+.market-overview-card.positive { border-color: rgba(255, 117, 117, 0.72); }
+.market-overview-card.negative { border-color: rgba(116, 180, 255, 0.72); }
 
 .market-overview-head,
 .market-overview-main,
@@ -146,9 +138,7 @@ h1 {
   font-weight: 900;
 }
 
-.market-overview-main {
-  margin-top: 8px;
-}
+.market-overview-main { margin-top: 8px; }
 
 .market-overview-main strong {
   color: var(--mb-strong);
@@ -183,17 +173,9 @@ h1 {
   vector-effect: non-scaling-stroke;
 }
 
-.market-overview-card.positive .market-sparkline {
-  color: var(--mb-up);
-}
-
-.market-overview-card.negative .market-sparkline {
-  color: var(--mb-down);
-}
-
-.market-overview-card.neutral .market-sparkline {
-  color: var(--mb-muted);
-}
+.market-overview-card.positive .market-sparkline { color: var(--mb-up); }
+.market-overview-card.negative .market-sparkline { color: var(--mb-down); }
+.market-overview-card.neutral .market-sparkline { color: var(--mb-muted); }
 
 .market-overview-foot {
   margin-top: 6px;
@@ -202,7 +184,6 @@ h1 {
   font-weight: 850;
 }
 
-/* metrics */
 .metrics-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -265,7 +246,6 @@ footer {
   font-weight: 800;
 }
 
-/* panels */
 .panel {
   border: 1px solid var(--mb-line);
   border-radius: 11px;
@@ -324,7 +304,7 @@ footer {
 
 .ranking-panel { margin-top: 14px; }
 
-.sector-grid-12 {
+.sector-grid-8 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
@@ -413,9 +393,7 @@ footer {
   font-weight: 850;
 }
 
-.sector-money {
-  align-items: flex-end;
-}
+.sector-money { align-items: flex-end; }
 
 .sector-money span,
 .sector-card-sub {
@@ -496,7 +474,6 @@ footer {
   font-size: 14px;
 }
 
-/* lower analysis */
 .below-ranking {
   display: grid;
   grid-template-columns: minmax(0, 1.22fr) minmax(390px, 0.78fr);
@@ -549,12 +526,9 @@ footer {
   background: var(--mb-accent);
 }
 
-.sync-badge.loading i {
-  background: var(--mb-gold);
-}
+.sync-badge.loading i { background: var(--mb-gold); }
 
 .selected-stocks-panel { margin-top: 14px; }
-
 .stock-table-wrap { overflow: auto; }
 
 table {
@@ -640,47 +614,27 @@ footer {
 }
 
 @media (max-width: 1440px) {
-  .market-overview-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .sector-grid-12 {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .below-ranking {
-    grid-template-columns: 1fr;
-  }
+  .market-overview-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sector-grid-8 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .below-ranking { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 980px) {
   body { min-width: 0; }
-
-  .moneyboard-app {
-    width: min(100vw - 18px, 820px);
-  }
-
+  .moneyboard-app { width: min(100vw - 18px, 820px); }
   .market-overview-strip,
   .metrics-grid,
-  .sector-grid-12 {
-    grid-template-columns: 1fr 1fr;
-  }
-
+  .sector-grid-8 { grid-template-columns: 1fr 1fr; }
   .panel-header,
   .app-header {
     align-items: flex-start;
     flex-direction: column;
   }
-
-  .search-box {
-    width: 100%;
-  }
+  .search-box { width: 100%; }
 }
 
 @media (max-width: 640px) {
   .market-overview-strip,
   .metrics-grid,
-  .sector-grid-12 {
-    grid-template-columns: 1fr;
-  }
+  .sector-grid-8 { grid-template-columns: 1fr; }
 }
