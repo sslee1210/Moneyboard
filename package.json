@@ -12,6 +12,7 @@
     "test": "node scripts/test-core.mjs && npm run build",
     "test:core": "node scripts/test-core.mjs",
     "test:live": "node scripts/test-live.mjs",
+    "test:local": "node scripts/test-local.mjs",
     "build": "vite build",
     "build:static": "npm run snapshot && vite build",
     "build:pages": "npm run snapshot && vite build",
