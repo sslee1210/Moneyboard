@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "server": "node scripts/run-practical-server.mjs",
+    "server": "node scripts/apply-focus-ui.mjs && vite build && node scripts/run-practical-server.mjs",
     "server:raw": "node server.js",
     "server:sanitized": "node server-local.js",
     "server:practical": "node server-practical.js",
@@ -15,7 +15,7 @@
     "test:core": "node scripts/test-core.mjs",
     "test:live": "node scripts/test-live.mjs",
     "test:local": "node scripts/test-local.mjs",
-    "build": "vite build",
+    "build": "node scripts/apply-focus-ui.mjs && vite build",
     "build:static": "npm run snapshot && vite build",
     "build:pages": "npm run snapshot && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
