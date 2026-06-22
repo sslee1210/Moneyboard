@@ -3,6 +3,15 @@ import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  enrichSectorWithKis,
+  fetchKisQuote,
+  getKisStatus,
+  KIS_ENABLED,
+  KIS_MARKET_VERIFY_TOP_SECTORS,
+  KIS_MARKET_VERIFY_TOP_STOCKS,
+  KIS_SELECTED_SECTOR_STOCKS
+} from "./kis-provider.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
@@ -418,8 +427,10 @@ function normalizeTradingValue(stock, metadata = {}) {
     rawTradeAmountMillion: verified.rawTradeAmountMillion,
     estimatedTradeAmountMillion: verified.estimatedTradeAmountMillion,
     tradeAmountMillion: verified.tradeAmountMillion,
+    dataProvider: "Naver",
     tradingValueValidation: {
       status: verified.status,
+      source: "Naver Finance",
       ratio: verified.ratio,
       priceColumn: metadata.priceColumn,
       volumeColumn: metadata.volumeColumn,
@@ -527,6 +538,8 @@ function parseSectorDetail(html, sector) {
     derivedTradeAmountCount,
     unverifiedTradeAmountCount,
     validationStatusCounts,
+    kisVerifiedCount: 0,
+    kisErrorCount: 0,
     tradingValueMillion,
     volume,
     weightedChangeRate,
@@ -570,7 +583,8 @@ async function mapLimit(items, limit, mapper) {
 
 async function getSectorDetail(sector, options = {}) {
   const force = typeof options === "boolean" ? options : Boolean(options.force);
-  const cacheKey = sector.id;
+  const kisStockLimit = Number(options.kisStockLimit || 0);
+  const cacheKey = `${sector.id}:kis:${kisStockLimit}`;
   const cached = detailCache.get(cacheKey);
 
   if (!force && cached?.data && cached.expiresAt > Date.now()) return cached.data;
@@ -578,6 +592,7 @@ async function getSectorDetail(sector, options = {}) {
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
     .then((html) => parseSectorDetail(html, sector))
+    .then((data) => (kisStockLimit > 0 ? enrichSectorWithKis(data, { force, stockLimit: kisStockLimit }) : data))
     .then((data) => {
       detailCache.set(cacheKey, {
         data,
@@ -608,12 +623,33 @@ function sortSectorsByTradingValue(sectors = []) {
   });
 }
 
+async function enrichRankedSectorsWithKis(rankedSectors, force = false) {
+  if (!KIS_ENABLED || KIS_MARKET_VERIFY_TOP_SECTORS <= 0 || KIS_MARKET_VERIFY_TOP_STOCKS <= 0) {
+    return rankedSectors;
+  }
+
+  const enriched = await mapLimit(rankedSectors, Math.min(DETAIL_CONCURRENCY, 3), async (sector, index) => {
+    if (index >= KIS_MARKET_VERIFY_TOP_SECTORS) return sector;
+    return enrichSectorWithKis(sector, {
+      force,
+      stockLimit: KIS_MARKET_VERIFY_TOP_STOCKS
+    });
+  });
+
+  return sortSectorsByTradingValue(enriched).map((sector, index) => ({
+    ...sector,
+    rank: index + 1
+  }));
+}
+
 function buildSnapshotValidation(rankedSectors) {
   const sectorOrderErrorCount = countOrderErrors(rankedSectors, "tradingValueMillion");
   let stockOrderErrorCount = 0;
   let unverifiedTradeAmountCount = 0;
   let repairedTradeAmountCount = 0;
   let derivedTradeAmountCount = 0;
+  let kisVerifiedCount = 0;
+  let kisErrorCount = 0;
   let duplicateStockCount = 0;
   const seenCodes = new Set();
   const validationStatusCounts = {};
@@ -623,6 +659,8 @@ function buildSnapshotValidation(rankedSectors) {
     unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
     repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
     derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
+    kisVerifiedCount += sector.kisVerifiedCount || 0;
+    kisErrorCount += sector.kisErrorCount || 0;
 
     for (const [status, count] of Object.entries(sector.validationStatusCounts || {})) {
       validationStatusCounts[status] = (validationStatusCounts[status] || 0) + count;
@@ -644,9 +682,13 @@ function buildSnapshotValidation(rankedSectors) {
     unverifiedTradeAmountCount,
     repairedTradeAmountCount,
     derivedTradeAmountCount,
+    kisVerifiedCount,
+    kisErrorCount,
     duplicateStockCount,
     validationStatusCounts,
-    method: "header-aligned parser + candidate-column validation + price-volume fallback",
+    method: KIS_ENABLED
+      ? "KIS REST quote overlay + Naver header-aligned parser fallback"
+      : "header-aligned parser + candidate-column validation + price-volume fallback",
     invariant: "Displayed sectors and stocks are sorted by validated daily trading value in descending order.",
     thresholds: {
       minRatio: TRADE_VALUE_MIN_RATIO,
@@ -665,7 +707,7 @@ async function buildMarketSnapshot(force = false) {
       const [details, overview] = await Promise.all([
         mapLimit(sectors, DETAIL_CONCURRENCY, async (sector) => {
           try {
-            return await getSectorDetail(sector, { force });
+            return await getSectorDetail(sector, { force, kisStockLimit: 0 });
           } catch (error) {
             return {
               ...sector,
@@ -680,6 +722,8 @@ async function buildMarketSnapshot(force = false) {
               repairedTradeAmountCount: 0,
               derivedTradeAmountCount: 0,
               unverifiedTradeAmountCount: 1,
+              kisVerifiedCount: 0,
+              kisErrorCount: 0,
               validationStatusCounts: { unverified: 1 },
               validation: { status: "error", error: error.message },
               error: error.message
@@ -689,10 +733,11 @@ async function buildMarketSnapshot(force = false) {
         buildMarketOverview(force)
       ]);
 
-      const rankedSectors = sortSectorsByTradingValue(details).map((sector, index) => ({
+      const naverRankedSectors = sortSectorsByTradingValue(details).map((sector, index) => ({
         ...sector,
         rank: index + 1
       }));
+      const rankedSectors = await enrichRankedSectorsWithKis(naverRankedSectors, force);
       const validation = buildSnapshotValidation(rankedSectors);
 
       const totals = rankedSectors.reduce(
@@ -704,6 +749,8 @@ async function buildMarketSnapshot(force = false) {
           acc.repairedTradeAmountCount += sector.repairedTradeAmountCount || 0;
           acc.derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
           acc.unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
+          acc.kisVerifiedCount += sector.kisVerifiedCount || 0;
+          acc.kisErrorCount += sector.kisErrorCount || 0;
           acc.breadth.rising += sector.risingCount || 0;
           acc.breadth.flat += sector.flatCount || 0;
           acc.breadth.falling += sector.fallingCount || 0;
@@ -718,21 +765,24 @@ async function buildMarketSnapshot(force = false) {
           repairedTradeAmountCount: 0,
           derivedTradeAmountCount: 0,
           unverifiedTradeAmountCount: 0,
+          kisVerifiedCount: 0,
+          kisErrorCount: 0,
           breadth: { rising: 0, flat: 0, falling: 0 }
         }
       );
 
       return {
         mode: "localhost-live",
-        provider: "Naver Finance",
+        provider: KIS_ENABLED ? "KIS Open API + Naver Finance" : "Naver Finance",
         overviewProvider: "Yahoo Finance",
-        rankingBasis: "validated-daily-trading-value",
+        rankingBasis: KIS_ENABLED ? "kis-verified-daily-trading-value" : "validated-daily-trading-value",
         validationMethod: validation.method,
         excludes: ["ETF", "ETN", "ELW"],
         refreshMs: STREAM_PUSH_MS,
         marketCacheMs: MARKET_CACHE_MS,
         overviewCacheMs: OVERVIEW_CACHE_MS,
         updatedAt: new Date().toISOString(),
+        kis: getKisStatus(),
         overview,
         totals,
         validation,
@@ -792,11 +842,13 @@ app.use((request, response, next) => {
 
 app.get("/api/provider", (_request, response) => {
   response.json({
-    provider: "Naver Finance",
+    provider: KIS_ENABLED ? "KIS Open API + Naver Finance" : "Naver Finance",
     overviewProvider: "Yahoo Finance",
     mode: "localhost-live",
-    rankingBasis: "validated-daily-trading-value",
-    validationMethod: "header-aligned parser + candidate-column validation + price-volume fallback",
+    rankingBasis: KIS_ENABLED ? "kis-verified-daily-trading-value" : "validated-daily-trading-value",
+    validationMethod: KIS_ENABLED
+      ? "KIS REST quote overlay + Naver header-aligned parser fallback"
+      : "header-aligned parser + candidate-column validation + price-volume fallback",
     excludes: ["ETF", "ETN", "ELW"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
@@ -805,8 +857,24 @@ app.get("/api/provider", (_request, response) => {
       min: TRADE_VALUE_MIN_RATIO,
       max: TRADE_VALUE_MAX_RATIO
     },
-    kis: { configured: false, enabled: false }
+    kis: getKisStatus()
   });
+});
+
+app.get("/api/kis/status", (_request, response) => {
+  response.json(getKisStatus());
+});
+
+app.get("/api/kis/quote/:code", async (request, response) => {
+  try {
+    response.json(await fetchKisQuote(request.params.code, { force: request.query.force === "1" }));
+  } catch (error) {
+    response.status(KIS_ENABLED ? 502 : 400).json({
+      status: "error",
+      error: error.message,
+      kis: getKisStatus()
+    });
+  }
 });
 
 app.get("/api/overview", async (request, response) => {
@@ -839,7 +907,12 @@ app.get("/api/sectors/:id", async (request, response) => {
     const snapshot = await buildMarketSnapshot(false);
     const sector = snapshot.sectors.find((item) => item.id === request.params.id);
     if (!sector) return response.status(404).json({ error: "Sector not found" });
-    response.json(await getSectorDetail(sector, { force: true }));
+    response.json(
+      await getSectorDetail(sector, {
+        force: request.query.force === "1",
+        kisStockLimit: KIS_SELECTED_SECTOR_STOCKS
+      })
+    );
   } catch (error) {
     response.status(502).json({ error: error.message });
   }
@@ -885,9 +958,10 @@ app.get(/.*/, (_request, response) => {
 function startServer() {
   app.listen(PORT, () => {
     console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
-    console.log("Provider: Naver Finance only. KIS is disabled.");
+    console.log(`Provider: ${KIS_ENABLED ? "KIS Open API + Naver Finance fallback" : "Naver Finance only. KIS is disabled."}`);
+    console.log(`KIS status: ${JSON.stringify(getKisStatus())}`);
     console.log("Ranking basis: validated daily trading value. ETF/ETN/ELW excluded.");
-    console.log("Validation: header-aligned parser + candidate-column validation + price-volume fallback.");
+    console.log(`Validation: ${KIS_ENABLED ? "KIS quote overlay + Naver fallback" : "header-aligned parser + candidate-column validation + price-volume fallback"}.`);
     console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
     console.log("Market overview: KOSPI/KOSDAQ/Nasdaq100 futures/USD-KRW/S&P500 via Yahoo Finance.");
   });
