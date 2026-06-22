@@ -1,8 +1,8 @@
-import WebSocket from "ws";
 import { KIS_APP_KEY, KIS_APP_SECRET, KIS_BASE_URL, KIS_ENABLED, KIS_ENV, KIS_REQUEST_TIMEOUT_MS } from "./kis-provider.js";
 
+const NativeWebSocket = globalThis.WebSocket;
 const WS_URL = process.env.KIS_WS_URL || (KIS_ENV === "demo" ? "ws://ops.koreainvestment.com:31000" : "ws://ops.koreainvestment.com:21000");
-const ENABLED = KIS_ENABLED && !/^(0|false|no|off)$/i.test(String(process.env.KIS_REALTIME_ENABLED || "true"));
+const ENABLED = Boolean(NativeWebSocket) && KIS_ENABLED && !/^(0|false|no|off)$/i.test(String(process.env.KIS_REALTIME_ENABLED || "true"));
 const MAX_CODES = Math.max(1, Number(process.env.KIS_REALTIME_MAX_CODES || 40));
 const TR_ID = "H0STCNT0";
 const FIELD_COUNT = 46;
@@ -100,8 +100,8 @@ function handleTrade(dataCount, payload) {
   }
 }
 
-function onMessage(raw) {
-  const text = Buffer.isBuffer(raw) ? raw.toString("utf8") : String(raw || "");
+function onMessage(event) {
+  const text = typeof event?.data === "string" ? event.data : String(event?.data || "");
   state.lastMessageAt = new Date().toISOString();
   if (text[0] === "0") {
     const parts = text.split("|");
@@ -110,7 +110,6 @@ function onMessage(raw) {
   }
   try {
     const json = JSON.parse(text);
-    if (json?.header?.tr_id === "PINGPONG") return ws?.pong?.(text);
     if (json?.body?.rt_cd && json.body.rt_cd !== "0") pushError(json.body.msg1);
   } catch {
     // ignore unknown control frame
@@ -118,7 +117,7 @@ function onMessage(raw) {
 }
 
 async function sendSubscriptions() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!ws || ws.readyState !== NativeWebSocket.OPEN) return;
   for (const stockCode of desired) {
     if (subscribed.has(stockCode)) continue;
     ws.send(subscribeMessage(stockCode));
@@ -128,22 +127,22 @@ async function sendSubscriptions() {
 
 async function connect() {
   if (!ENABLED) return getRealtimeStatus();
-  if (ws?.readyState === WebSocket.OPEN) return getRealtimeStatus();
+  if (ws?.readyState === NativeWebSocket.OPEN) return getRealtimeStatus();
   if (connecting) return connecting;
   connecting = (async () => {
     try {
       await approvalKey();
-      ws = new WebSocket(WS_URL, { perMessageDeflate: false });
+      ws = new NativeWebSocket(WS_URL);
       await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("KIS websocket open timeout")), KIS_REQUEST_TIMEOUT_MS);
-        ws.once("open", () => { clearTimeout(timeout); resolve(); });
-        ws.once("error", (error) => { clearTimeout(timeout); reject(error); });
+        ws.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, { once: true });
+        ws.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("KIS websocket error")); }, { once: true });
       });
       state.connected = true;
       subscribed = new Set();
-      ws.on("message", onMessage);
-      ws.on("close", () => { state.connected = false; subscribed = new Set(); setTimeout(connect, 10000); });
-      ws.on("error", (error) => pushError(error.message));
+      ws.addEventListener("message", onMessage);
+      ws.addEventListener("close", () => { state.connected = false; subscribed = new Set(); setTimeout(connect, 10000); });
+      ws.addEventListener("error", () => pushError("KIS websocket error"));
       await sendSubscriptions();
     } catch (error) {
       state.connected = false;
