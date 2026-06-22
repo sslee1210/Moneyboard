@@ -36,6 +36,7 @@ const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port) && !window.location.hostname.endsWith("github.io");
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
 const apiFallbackPollMs = 30_000;
+const pagesStaticPollMs = 15_000;
 const volumePeriods = [
   { id: "day", label: "일일" },
   { id: "week", label: "주간" },
@@ -158,6 +159,22 @@ function useMarketStream() {
     let fallbackTimer;
     let fallbackLoopStarted = false;
 
+    const loadPagesSnapshot = async () => {
+      try {
+        const data = await loadStaticMarket();
+        if (!closed) {
+          setSnapshot(data);
+          setStreamState("polling");
+          setError("GitHub Pages 자동 갱신");
+        }
+      } catch (staticError) {
+        if (!closed) {
+          setStreamState("offline");
+          setError(staticError.message);
+        }
+      }
+    };
+
     const loadStaticPreview = async () => {
       try {
         const data = await loadStaticMarket();
@@ -210,9 +227,24 @@ function useMarketStream() {
       void run();
     };
 
-    if (!canUseApi || !("EventSource" in window)) {
+    if (!canUseApi) {
+      const run = async () => {
+        await loadPagesSnapshot();
+        if (!closed) {
+          fallbackTimer = window.setTimeout(run, pagesStaticPollMs);
+        }
+      };
+
+      void run();
+      return () => {
+        closed = true;
+        clearTimeout(fallbackTimer);
+      };
+    }
+
+    if (!("EventSource" in window)) {
       loadStaticPreview();
-      startFallbackLoop({ forceReader: !canUseApi, delayMs: canUseApi ? apiFallbackPollMs : 0 });
+      startFallbackLoop();
       return () => {
         closed = true;
         clearTimeout(fallbackTimer);
@@ -518,7 +550,7 @@ export default function App() {
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const data = await loadLiveSector(selectedSector, { forceReader: !canUseApi });
+        const data = canUseApi ? await loadLiveSector(selectedSector) : await loadStaticSector(selectedSector.id);
         if (!cancelled) setSectorDetail(data);
       } catch {
         try {
@@ -535,7 +567,7 @@ export default function App() {
     const run = async () => {
       await loadDetail();
       if (!cancelled) {
-        timer = window.setTimeout(run, canUseApi ? apiFallbackPollMs : 0);
+        timer = window.setTimeout(run, canUseApi ? apiFallbackPollMs : pagesStaticPollMs);
       }
     };
 
@@ -559,10 +591,12 @@ export default function App() {
       const staticProfile = buildStaticVolumeProfile(sectorDetail.stocks);
 
       try {
-        if (!cancelled && staticProfile) setVolumeProfile(staticProfile);
+        if (!cancelled) setVolumeProfile(staticProfile);
+
+        if (!canUseApi) return;
 
         const data = await loadReaderVolumeProfile(sectorDetail.stocks, {
-          force: !canUseApi,
+          force: false,
           limit: volumeHistoryLimit
         });
         const staticCoverage = (staticProfile?.counts?.week || 0) + (staticProfile?.counts?.month || 0);
