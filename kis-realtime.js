@@ -14,7 +14,23 @@ let desired = new Set();
 let subscribed = new Set();
 const quotes = new Map();
 const errors = [];
-const state = { enabled: ENABLED, connected: false, wsUrl: WS_URL, trId: TR_ID, lastMessageAt: null, lastQuoteAt: null, lastError: "" };
+const state = {
+  enabled: ENABLED,
+  connected: false,
+  wsUrl: WS_URL,
+  trId: TR_ID,
+  lastMessageAt: null,
+  lastQuoteAt: null,
+  lastPongAt: null,
+  lastSubscribeAckAt: null,
+  lastCloseAt: null,
+  lastCloseCode: null,
+  lastCloseReason: "",
+  controlMessageCount: 0,
+  subscribeAckCount: 0,
+  subscribeRejectCount: 0,
+  lastError: ""
+};
 
 function num(value) {
   const n = Number(String(value ?? "").replace(/,/g, "").replace(/[^\d.-]/g, ""));
@@ -38,6 +54,10 @@ function pushError(message) {
   state.lastError = String(message || "realtime error");
   errors.unshift({ message: state.lastError, at: new Date().toISOString() });
   errors.splice(5);
+}
+
+function sendIfOpen(message) {
+  if (ws && ws.readyState === NativeWebSocket.OPEN) ws.send(message);
 }
 
 async function approvalKey() {
@@ -100,17 +120,47 @@ function handleTrade(dataCount, payload) {
   }
 }
 
+function handleControlMessage(text) {
+  const json = JSON.parse(text);
+  const trId = json?.header?.tr_id || json?.body?.tr_id || "";
+  const body = json?.body || {};
+  state.controlMessageCount += 1;
+
+  if (trId === "PINGPONG") {
+    sendIfOpen(text);
+    state.lastPongAt = new Date().toISOString();
+    return;
+  }
+
+  if (trId === TR_ID) {
+    if (body.rt_cd === "0") {
+      state.subscribeAckCount += 1;
+      state.lastSubscribeAckAt = new Date().toISOString();
+      return;
+    }
+    if (body.rt_cd) {
+      state.subscribeRejectCount += 1;
+      pushError(`${body.msg_cd || "KIS"}: ${body.msg1 || "realtime subscription rejected"}`);
+      return;
+    }
+  }
+
+  if (body.rt_cd && body.rt_cd !== "0") pushError(`${body.msg_cd || "KIS"}: ${body.msg1 || "realtime control error"}`);
+}
+
 function onMessage(event) {
   const text = typeof event?.data === "string" ? event.data : String(event?.data || "");
   state.lastMessageAt = new Date().toISOString();
+  if (!text) return;
+
   if (text[0] === "0") {
     const parts = text.split("|");
     if (parts[1] === TR_ID) handleTrade(parts[2], parts[3]);
     return;
   }
+
   try {
-    const json = JSON.parse(text);
-    if (json?.body?.rt_cd && json.body.rt_cd !== "0") pushError(json.body.msg1);
+    handleControlMessage(text);
   } catch {
     // ignore unknown control frame
   }
@@ -136,13 +186,21 @@ async function connect() {
       await new Promise((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("KIS websocket open timeout")), KIS_REQUEST_TIMEOUT_MS);
         ws.addEventListener("open", () => { clearTimeout(timeout); resolve(); }, { once: true });
-        ws.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("KIS websocket error")); }, { once: true });
+        ws.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("KIS websocket error while opening")); }, { once: true });
       });
       state.connected = true;
+      state.lastError = "";
       subscribed = new Set();
       ws.addEventListener("message", onMessage);
-      ws.addEventListener("close", () => { state.connected = false; subscribed = new Set(); setTimeout(connect, 10000); });
-      ws.addEventListener("error", () => pushError("KIS websocket error"));
+      ws.addEventListener("close", (event) => {
+        state.connected = false;
+        state.lastCloseAt = new Date().toISOString();
+        state.lastCloseCode = event?.code ?? null;
+        state.lastCloseReason = event?.reason || "";
+        subscribed = new Set();
+        setTimeout(connect, 10000);
+      });
+      ws.addEventListener("error", () => pushError("KIS websocket error event after open"));
       await sendSubscriptions();
     } catch (error) {
       state.connected = false;
