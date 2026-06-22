@@ -257,7 +257,9 @@ async function getSectorDetail(sector, options = false) {
 }
 
 function summarizeSector(detail) {
-  const topVolumeStock = detail.topVolumeStocks?.[0] || detail.topStocks?.[0] || null;
+  const volumeStocks = sortStocksByVolume(detail.stocks || []);
+  const topVolumeStock = volumeStocks[0] || detail.topVolumeStocks?.[0] || detail.topStocks?.[0] || null;
+
   return {
     id: detail.id,
     name: detail.name,
@@ -271,6 +273,7 @@ function summarizeSector(detail) {
     volume: detail.volume,
     topStocks: detail.topStocks,
     topVolumeStocks: detail.topVolumeStocks,
+    stocks: volumeStocks.slice(0, 12),
     topStockName: topVolumeStock?.name || null,
     topStockCode: topVolumeStock?.code || null,
     naverUrl: detail.naverUrl,
@@ -282,7 +285,7 @@ async function buildMarketSnapshot() {
   const sectorHtml = await fetchHtml("/sise/sise_group.naver?type=upjong");
   const sectors = parseSectorList(sectorHtml);
   const details = await mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => getSectorDetail(sector));
-  const summaries = details.map(summarizeSector).sort((a, b) => b.tradingValueMillion - a.tradingValueMillion);
+  const summaries = details.map(summarizeSector).sort((a, b) => b.volume - a.volume);
   const totalTradingValueMillion = summaries.reduce((sum, sector) => sum + sector.tradingValueMillion, 0);
   const totalVolume = summaries.reduce((sum, sector) => sum + sector.volume, 0);
   const breadth = summaries.reduce(
