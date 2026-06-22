@@ -15,6 +15,12 @@ import {
   KIS_ENABLED,
   KIS_SELECTED_SECTOR_STOCKS
 } from "./kis-provider.js";
+import {
+  applyRealtimeQuoteToStock,
+  getRealtimeStatus,
+  startKisRealtime,
+  subscribeRealtimeCodes
+} from "./kis-realtime.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
@@ -22,9 +28,13 @@ const STREAM_PUSH_MS = Number(process.env.STREAM_PUSH_MS || 2_000);
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 10_000);
 const OVERVIEW_CACHE_MS = Number(process.env.OVERVIEW_CACHE_MS || 5_000);
 const STOCK_CODE_PATTERN = /^\d{6}$/;
+const REALTIME_SUBSCRIBE_TOP_SECTORS = Math.max(1, Number(process.env.KIS_REALTIME_TOP_SECTORS || 12));
+const REALTIME_SUBSCRIBE_TOP_STOCKS = Math.max(1, Number(process.env.KIS_REALTIME_TOP_STOCKS || 5));
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+let lastSanitizedSnapshot = null;
+let lastSnapshotPromise = null;
 
 function isValidStockCode(code) {
   return STOCK_CODE_PATTERN.test(String(code || ""));
@@ -64,25 +74,22 @@ function sanitizeStocks(stocks = []) {
   const unverifiedStocks = [];
   const cleanStocks = [];
 
-  for (const stock of stocks || []) {
+  for (const rawStock of stocks || []) {
+    const stock = applyRealtimeQuoteToStock(rawStock);
     const code = String(stock?.code || "");
     if (!isValidStockCode(code)) {
       invalidStocks.push(stock);
       continue;
     }
-
     if (seen.has(code)) {
       duplicateStocks.push(stock);
       continue;
     }
-
     seen.add(code);
-
     if (!isVerifiedTradingValueStock(stock)) {
       unverifiedStocks.push({ ...stock, code });
       continue;
     }
-
     cleanStocks.push({ ...stock, code });
   }
 
@@ -106,8 +113,7 @@ function recalculateSector(sector) {
   const volume = stocks.reduce((sum, stock) => sum + (stock.volume || 0), 0);
   const weightedChangeRate =
     tradingValueMillion > 0
-      ? stocks.reduce((sum, stock) => sum + (stock.changeRate || 0) * (stock.tradeAmountMillion || 0), 0) /
-        tradingValueMillion
+      ? stocks.reduce((sum, stock) => sum + (stock.changeRate || 0) * (stock.tradeAmountMillion || 0), 0) / tradingValueMillion
       : sector.changeRate;
   const validationStatusCounts = countByValidationStatus(stocks);
   const repairedTradeAmountCount =
@@ -116,6 +122,7 @@ function recalculateSector(sector) {
   const derivedTradeAmountCount = validationStatusCounts["derived-price-volume"] || 0;
   const unverifiedTradeAmountCount = validationStatusCounts.unverified || 0;
   const kisVerifiedCount = validationStatusCounts["kis-verified"] || 0;
+  const kisRealtimeCount = validationStatusCounts["kis-realtime"] || 0;
   const stockOrderErrorCount = countOrderErrors(stocks, "tradeAmountMillion");
   const invalidStockCount = invalidStocks.length;
   const duplicateStockCount = duplicateStocks.length;
@@ -141,6 +148,7 @@ function recalculateSector(sector) {
     derivedTradeAmountCount,
     unverifiedTradeAmountCount,
     kisVerifiedCount,
+    kisRealtimeCount,
     validation: {
       ...(sector.validation || {}),
       status: unverifiedTradeAmountCount === 0 && stockOrderErrorCount === 0 ? "ok" : "warning",
@@ -153,8 +161,10 @@ function recalculateSector(sector) {
       derivedTradeAmountCount,
       unverifiedTradeAmountCount,
       kisVerifiedCount,
+      kisRealtimeCount,
       validationStatusCounts
     },
+    realtime: getRealtimeStatus(),
     updatedAt: new Date().toISOString()
   };
 }
@@ -171,6 +181,7 @@ function buildTotals(sectors = []) {
       acc.derivedTradeAmountCount += sector.derivedTradeAmountCount || 0;
       acc.unverifiedTradeAmountCount += sector.unverifiedTradeAmountCount || 0;
       acc.kisVerifiedCount += sector.kisVerifiedCount || 0;
+      acc.kisRealtimeCount += sector.kisRealtimeCount || 0;
       acc.kisErrorCount += sector.kisErrorCount || 0;
       acc.invalidStockCount += sector.invalidStockCount || 0;
       acc.duplicateStockCount += sector.duplicateStockCount || 0;
@@ -191,6 +202,7 @@ function buildTotals(sectors = []) {
       derivedTradeAmountCount: 0,
       unverifiedTradeAmountCount: 0,
       kisVerifiedCount: 0,
+      kisRealtimeCount: 0,
       kisErrorCount: 0,
       invalidStockCount: 0,
       duplicateStockCount: 0,
@@ -199,6 +211,16 @@ function buildTotals(sectors = []) {
       breadth: { rising: 0, flat: 0, falling: 0 }
     }
   );
+}
+
+function subscribeSnapshotRealtime(snapshot) {
+  const codes = [];
+  for (const sector of (snapshot.sectors || []).slice(0, REALTIME_SUBSCRIBE_TOP_SECTORS)) {
+    for (const stock of (sector.stocks || sector.topTradingValueStocks || []).slice(0, REALTIME_SUBSCRIBE_TOP_STOCKS)) {
+      if (isValidStockCode(stock.code)) codes.push(stock.code);
+    }
+  }
+  void subscribeRealtimeCodes(codes);
 }
 
 function sanitizeSnapshot(snapshot) {
@@ -211,8 +233,9 @@ function sanitizeSnapshot(snapshot) {
   const duplicateStockCount = sectors.reduce((sum, sector) => sum + (sector.duplicateStockCount || 0), 0);
   const unverifiedDroppedStockCount = sectors.reduce((sum, sector) => sum + (sector.unverifiedDroppedStockCount || 0), 0);
 
-  return {
+  const sanitized = {
     ...snapshot,
+    mode: "localhost-live-sanitized",
     sectors,
     totals: buildTotals(sectors),
     validation: {
@@ -221,14 +244,62 @@ function sanitizeSnapshot(snapshot) {
       duplicateStockCount,
       unverifiedDroppedStockCount,
       droppedStockCount: invalidStockCount + duplicateStockCount + unverifiedDroppedStockCount,
-      sanitizer: "final API response sanitizer: valid six-digit stock codes and verified trading value only"
+      sanitizer: "final API response sanitizer: valid six-digit stock codes and verified trading value only",
+      realtime: getRealtimeStatus()
     },
+    realtime: getRealtimeStatus(),
     excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "unverified trading value rows"]
   };
+
+  subscribeSnapshotRealtime(sanitized);
+  return sanitized;
 }
 
 async function buildSanitizedMarketSnapshot(force = false) {
-  return sanitizeSnapshot(await getMarketSnapshot(force));
+  if (!force && lastSanitizedSnapshot && lastSanitizedSnapshot._expiresAt > Date.now()) {
+    return sanitizeSnapshot(lastSanitizedSnapshot._rawSnapshot || lastSanitizedSnapshot);
+  }
+  if (!force && lastSnapshotPromise) return lastSnapshotPromise;
+
+  lastSnapshotPromise = getMarketSnapshot(force)
+    .then((snapshot) => {
+      const sanitized = sanitizeSnapshot(snapshot);
+      lastSanitizedSnapshot = {
+        ...sanitized,
+        _rawSnapshot: snapshot,
+        _expiresAt: Date.now() + MARKET_CACHE_MS
+      };
+      return sanitized;
+    })
+    .finally(() => {
+      lastSnapshotPromise = null;
+    });
+
+  return lastSnapshotPromise;
+}
+
+function buildBootstrapSnapshot() {
+  return {
+    mode: "localhost-live-sanitized",
+    provider: KIS_ENABLED ? "KIS Open API + Naver Finance" : "Naver Finance",
+    overviewProvider: "Yahoo Finance",
+    rankingBasis: KIS_ENABLED ? "kis-realtime-and-validated-daily-trading-value" : "validated-daily-trading-value",
+    validationMethod: KIS_ENABLED
+      ? "KIS WebSocket realtime overlay + KIS REST quote overlay + Naver parser fallback + final sanitizer"
+      : "header-aligned parser + candidate-column validation + price-volume fallback + final sanitizer",
+    excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "unverified trading value rows"],
+    refreshMs: STREAM_PUSH_MS,
+    marketCacheMs: MARKET_CACHE_MS,
+    overviewCacheMs: OVERVIEW_CACHE_MS,
+    updatedAt: new Date().toISOString(),
+    bootstrapping: true,
+    kis: getKisStatus(),
+    realtime: getRealtimeStatus(),
+    overview: { provider: "Yahoo Finance", items: [], updatedAt: new Date().toISOString() },
+    totals: buildTotals([]),
+    validation: { status: "loading", errorCount: 0, realtime: getRealtimeStatus() },
+    sectors: []
+  };
 }
 
 app.use(express.json({ limit: "1mb" }));
@@ -246,20 +317,25 @@ app.get("/api/provider", (_request, response) => {
     provider: KIS_ENABLED ? "KIS Open API + Naver Finance" : "Naver Finance",
     overviewProvider: "Yahoo Finance",
     mode: "localhost-live-sanitized",
-    rankingBasis: KIS_ENABLED ? "kis-verified-daily-trading-value" : "validated-daily-trading-value",
+    rankingBasis: KIS_ENABLED ? "kis-realtime-and-validated-daily-trading-value" : "validated-daily-trading-value",
     validationMethod: KIS_ENABLED
-      ? "KIS REST quote overlay + Naver header-aligned parser fallback + final response sanitizer"
+      ? "KIS WebSocket realtime overlay + KIS REST quote overlay + Naver header-aligned parser fallback + final response sanitizer"
       : "header-aligned parser + candidate-column validation + price-volume fallback + final response sanitizer",
     excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "unverified trading value rows"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
     overviewCacheMs: OVERVIEW_CACHE_MS,
-    kis: getKisStatus()
+    kis: getKisStatus(),
+    realtime: getRealtimeStatus()
   });
 });
 
 app.get("/api/kis/status", (_request, response) => {
   response.json(getKisStatus());
+});
+
+app.get("/api/realtime/status", (_request, response) => {
+  response.json(getRealtimeStatus());
 });
 
 app.get("/api/kis/quote/:code", async (request, response) => {
@@ -269,7 +345,8 @@ app.get("/api/kis/quote/:code", async (request, response) => {
     response.status(KIS_ENABLED ? 502 : 400).json({
       status: "error",
       error: error.message,
-      kis: getKisStatus()
+      kis: getKisStatus(),
+      realtime: getRealtimeStatus()
     });
   }
 });
@@ -286,7 +363,7 @@ app.get("/api/sectors", async (request, response) => {
   try {
     response.json(await buildSanitizedMarketSnapshot(request.query.force === "1"));
   } catch (error) {
-    response.status(502).json({ error: error.message });
+    response.status(502).json({ error: error.message, realtime: getRealtimeStatus() });
   }
 });
 
@@ -295,7 +372,7 @@ app.get("/api/validation", async (request, response) => {
     const snapshot = await buildSanitizedMarketSnapshot(request.query.force === "1");
     response.status(snapshot.validation.status === "ok" ? 200 : 409).json(snapshot.validation);
   } catch (error) {
-    response.status(502).json({ status: "error", error: error.message });
+    response.status(502).json({ status: "error", error: error.message, realtime: getRealtimeStatus() });
   }
 });
 
@@ -313,12 +390,14 @@ app.get("/api/sectors/:id", async (request, response) => {
       )
     );
   } catch (error) {
-    response.status(502).json({ error: error.message });
+    response.status(502).json({ error: error.message, realtime: getRealtimeStatus() });
   }
 });
 
 app.post("/api/volume-profile", (request, response) => {
-  const stocks = sortStocksByTradingValue((request.body?.stocks || []).filter((stock) => isValidStockCode(stock?.code) && isVerifiedTradingValueStock(stock)));
+  const stocks = sortStocksByTradingValue(
+    (request.body?.stocks || []).map(applyRealtimeQuoteToStock).filter((stock) => isValidStockCode(stock?.code) && isVerifiedTradingValueStock(stock))
+  );
   const limit = Number(request.body?.limit || 12);
   const items = stocks.slice(0, limit).map((stock) => ({
     code: stock.code,
@@ -342,6 +421,7 @@ app.post("/api/volume-profile", (request, response) => {
       week: items.reduce((sum, item) => sum + (item.week || 0), 0),
       month: items.reduce((sum, item) => sum + (item.month || 0), 0)
     },
+    realtime: getRealtimeStatus(),
     updatedAt: new Date().toISOString()
   });
 });
@@ -353,23 +433,33 @@ app.get("/api/stream", async (request, response) => {
   response.flushHeaders?.();
 
   let closed = false;
+  let sending = false;
   request.on("close", () => {
     closed = true;
   });
 
-  const send = async () => {
+  function writeMarket(snapshot) {
     if (closed) return;
+    response.write("event: market\n");
+    response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+  }
+
+  const send = async () => {
+    if (closed || sending) return;
+    sending = true;
     try {
       const snapshot = await buildSanitizedMarketSnapshot(false);
-      response.write(`event: market\n`);
-      response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
+      writeMarket(snapshot);
     } catch (error) {
-      response.write(`event: error\n`);
-      response.write(`data: ${JSON.stringify({ error: error.message, updatedAt: new Date().toISOString() })}\n\n`);
+      response.write("event: error\n");
+      response.write(`data: ${JSON.stringify({ error: error.message, realtime: getRealtimeStatus(), updatedAt: new Date().toISOString() })}\n\n`);
+    } finally {
+      sending = false;
     }
   };
 
-  await send();
+  writeMarket(lastSanitizedSnapshot || buildBootstrapSnapshot());
+  void send();
   const interval = setInterval(send, STREAM_PUSH_MS);
   request.on("close", () => clearInterval(interval));
 });
@@ -379,10 +469,13 @@ app.get(/.*/, (_request, response) => {
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
+startKisRealtime();
+
 app.listen(PORT, () => {
   console.log(`Moneyboard sanitized local server listening on http://localhost:${PORT}`);
   console.log(`Provider: ${KIS_ENABLED ? "KIS Open API + Naver Finance fallback" : "Naver Finance only. KIS is disabled."}`);
   console.log(`KIS status: ${JSON.stringify(getKisStatus())}`);
-  console.log("Ranking basis: validated daily trading value. ETF/ETN/ELW/invalid-code/unverified rows excluded.");
+  console.log(`KIS realtime: ${JSON.stringify(getRealtimeStatus())}`);
+  console.log("Ranking basis: KIS realtime overlay + validated daily trading value. ETF/ETN/ELW/invalid-code/unverified rows excluded.");
   console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
 });
