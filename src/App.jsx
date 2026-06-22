@@ -152,6 +152,14 @@ function sortByVolume(sectors = []) {
   });
 }
 
+function sortStocksByVolume(stocks = []) {
+  return [...stocks].sort((left, right) => {
+    const volumeGap = (right.volume || 0) - (left.volume || 0);
+    if (volumeGap !== 0) return volumeGap;
+    return (right.tradeAmountMillion || 0) - (left.tradeAmountMillion || 0);
+  });
+}
+
 function buildStaticVolumeProfile(stocks) {
   const sample = (stocks || []).slice(0, volumeHistoryLimit);
   const items = sample
@@ -285,7 +293,10 @@ function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
 function SectorCard({ sector, selected, maxVolume, onSelect }) {
   const changeRate = sector.weightedChangeRate ?? sector.changeRate ?? 0;
   const volumeWidth = maxVolume ? Math.max(6, ((sector.volume || 0) / maxVolume) * 100) : 0;
-  const topStocks = (sector.topStocks || []).slice(0, 3);
+  const stockSource = sector.topVolumeStocks?.length ? sector.topVolumeStocks : sector.topStocks || [];
+  const topStocks = sortStocksByVolume(stockSource).slice(0, 5);
+  const maxStockVolume = topStocks[0]?.volume || 0;
+  const hiddenStockCount = Math.max(0, (sector.stockCount || stockSource.length || 0) - topStocks.length);
 
   return (
     <button className={`sector-card ${selected ? "is-selected" : ""}`} type="button" onClick={() => onSelect(sector)}>
@@ -299,12 +310,12 @@ function SectorCard({ sector, selected, maxVolume, onSelect }) {
 
       <div className="sector-card-title">
         <strong>{sector.name}</strong>
-        <span>{sector.stockCount || 0}종목 · {sector.topStockName || "상위 종목 집계 중"}</span>
+        <span>{sector.stockCount || 0}종목 · 거래량 상위 종목 포함</span>
       </div>
 
       <div className="sector-card-bars">
         <div className="bar-label">
-          <span>거래량</span>
+          <span>섹터 거래량</span>
           <strong>{formatVolume(sector.volume)}</strong>
         </div>
         <i style={{ width: `${volumeWidth}%` }} />
@@ -322,10 +333,30 @@ function SectorCard({ sector, selected, maxVolume, onSelect }) {
       </div>
 
       {topStocks.length > 0 && (
-        <div className="sector-stock-chips">
-          {topStocks.map((stock) => (
-            <span key={stock.code}>{stock.name}</span>
-          ))}
+        <div className="sector-stock-list" aria-label={`${sector.name} 거래량 상위 종목`}>
+          {topStocks.map((stock) => {
+            const stockVolumeWidth = maxStockVolume ? Math.max(5, ((stock.volume || 0) / maxStockVolume) * 100) : 0;
+            const stockChangeRate = stock.changeRate || 0;
+
+            return (
+              <div className="sector-stock-row" key={stock.code}>
+                <span className="sector-stock-name">
+                  <strong>{stock.name}</strong>
+                  <span>{stock.code} · {formatNumber(stock.price)}원</span>
+                </span>
+                <span className="sector-stock-volume">
+                  <span className="sector-stock-volume-top">
+                    <strong>{formatVolume(stock.volume)}</strong>
+                    <em className={changeClass(stockChangeRate)}>{formatPercent(stockChangeRate)}</em>
+                  </span>
+                  <span className="sector-stock-volume-bar">
+                    <i style={{ width: `${stockVolumeWidth}%` }} />
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+          {hiddenStockCount > 0 && <div className="sector-stock-more">+{hiddenStockCount}종목 더 보기</div>}
         </div>
       )}
     </button>
@@ -503,7 +534,7 @@ export default function App() {
     const keyword = query.trim().toLowerCase();
     if (!keyword) return volumeRankedSectors;
     return volumeRankedSectors.filter((sector) => {
-      const stockNames = (sector.topStocks || []).map((stock) => stock.name).join(" ");
+      const stockNames = [...(sector.topStocks || []), ...(sector.topVolumeStocks || [])].map((stock) => stock.name).join(" ");
       return `${sector.name} ${stockNames}`.toLowerCase().includes(keyword);
     });
   }, [volumeRankedSectors, query]);
@@ -639,7 +670,7 @@ export default function App() {
           <div className="panel-header sector-card-header">
             <div>
               <span className="eyebrow">거래량 랭킹</span>
-              <h2>섹터 카드</h2>
+              <h2>섹터·종목 카드</h2>
             </div>
             <div className="search-box">
               <Search size={16} />
