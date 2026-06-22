@@ -49,8 +49,8 @@ async function fetchPeriodVolumes(stock) {
   try {
     const response = await fetch(url, {
       headers: {
-        "accept": "application/json,text/plain,*/*",
-        "referer": `https://finance.naver.com/item/sise_day.naver?code=${stock.code}`,
+        accept: "application/json,text/plain,*/*",
+        referer: `https://finance.naver.com/item/sise_day.naver?code=${stock.code}`,
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
       }
@@ -81,7 +81,7 @@ async function fetchPeriodVolumes(stock) {
 }
 
 async function addPeriodVolumes(detail) {
-  const sample = detail.stocks.slice(0, HISTORY_LIMIT);
+  const sample = (detail.stocks || []).slice(0, HISTORY_LIMIT);
   const histories = await mapLimit(sample, HISTORY_CONCURRENCY, fetchPeriodVolumes);
   const byCode = new Map(histories.map((history) => [history.code, history]));
 
@@ -92,8 +92,9 @@ async function addPeriodVolumes(detail) {
 
   return {
     ...detail,
-    topStocks: detail.topStocks.map(annotate),
-    stocks: detail.stocks.map(annotate)
+    topStocks: (detail.topStocks || []).map(annotate),
+    topTradingValueStocks: (detail.topTradingValueStocks || []).map(annotate),
+    stocks: (detail.stocks || []).map(annotate)
   };
 }
 
@@ -115,8 +116,20 @@ async function mapLimit(items, limit, mapper) {
 
 await mkdir(sectorDir, { recursive: true });
 
-const snapshot = await getMarketSnapshot();
-const details = await mapLimit(snapshot.sectors, 8, async (sector) => addPeriodVolumes(await getSectorDetail(sector)));
+const snapshot = await getMarketSnapshot(true);
+if (snapshot.validation?.status !== "ok") {
+  throw new Error(`Snapshot validation failed: ${JSON.stringify(snapshot.validation)}`);
+}
+
+const details = await mapLimit(snapshot.sectors, 8, async (sector) => addPeriodVolumes(await getSectorDetail(sector, { force: true })));
+const detailValidationFailures = details.filter((detail) => detail.validation?.status !== "ok");
+if (detailValidationFailures.length) {
+  throw new Error(
+    `Sector detail validation failed: ${detailValidationFailures
+      .map((detail) => `${detail.name}:${detail.validation?.status}`)
+      .join(", ")}`
+  );
+}
 
 await writeFile(
   new URL("./market.json", outDir),
@@ -137,4 +150,5 @@ await Promise.all(
   )
 );
 
-console.log(`Generated static Pages data for ${snapshot.sectors.length} sectors.`);
+console.log(`Generated validated static Pages data for ${snapshot.sectors.length} sectors.`);
+console.log(`Validation status: ${snapshot.validation.status}, errorCount=${snapshot.validation.errorCount}`);
