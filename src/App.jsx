@@ -16,6 +16,8 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -68,6 +70,20 @@ function formatVolume(value) {
 function formatPercent(value = 0) {
   const sign = value > 0 ? "+" : "";
   return `${sign}${percentFormatter.format(value || 0)}%`;
+}
+
+function formatOverviewValue(item) {
+  const value = Number(item?.value);
+  if (!Number.isFinite(value)) return "수집 대기";
+  if (item?.kind === "fx") return `${percentFormatter.format(value)}원`;
+  return percentFormatter.format(value);
+}
+
+function overviewItems(overview) {
+  const preferredOrder = ["kospi", "kosdaq", "nasdaq100-futures", "usd-krw", "sp500"];
+  const items = overview?.items || [];
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return preferredOrder.map((id) => byId.get(id)).filter(Boolean);
 }
 
 function changeClass(value = 0) {
@@ -149,7 +165,9 @@ function useMarketStream() {
     stream.addEventListener("error", () => {
       if (!closed) {
         setStreamState("polling");
-        setError("실시간 연결 재시도 중");
+        setError("실시간 연결 끊김 · 폴링 전환");
+        stream?.close();
+        void poll();
       }
     });
 
@@ -161,6 +179,53 @@ function useMarketStream() {
   }, []);
 
   return { snapshot, streamState, error };
+}
+
+function MarketOverviewStrip({ overview }) {
+  const items = overviewItems(overview);
+
+  return (
+    <section className="market-overview-strip" aria-label="시장 주요 지표">
+      {items.map((item) => {
+        const changeRate = item.changeRate || 0;
+        const chartData = (item.points || []).map((point, index) => ({
+          index,
+          value: point.value,
+        }));
+
+        return (
+          <article className={`market-overview-card ${changeClass(changeRate)}`} key={item.id}>
+            <div className="market-overview-head">
+              <span>{item.label}</span>
+              <em>{item.symbol}</em>
+            </div>
+            <div className="market-overview-main">
+              <strong>{formatOverviewValue(item)}</strong>
+              <small className={changeClass(changeRate)}>{formatPercent(changeRate)}</small>
+            </div>
+            <div className="market-overview-chart">
+              {chartData.length > 1 ? (
+                <ResponsiveContainer width="100%" height={42}>
+                  <LineChart data={chartData} margin={{ top: 5, right: 0, bottom: 2, left: 0 }}>
+                    <Line
+                      dataKey="value"
+                      dot={false}
+                      isAnimationActive={false}
+                      stroke={changeRate >= 0 ? "#ff6565" : "#5da2ff"}
+                      strokeWidth={2}
+                      type="monotone"
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              ) : (
+                <span className="market-overview-empty">chart pending</span>
+              )}
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
 }
 
 function MetricCard({ icon: Icon, label, value, detail }) {
@@ -440,6 +505,8 @@ export default function App() {
         </div>
       </header>
 
+      <MarketOverviewStrip overview={snapshot?.overview} />
+
       <section className="metrics-grid">
         <MetricCard
           icon={Database}
@@ -459,7 +526,12 @@ export default function App() {
           value={`${breadth.rising}/${breadth.flat}/${breadth.falling}`}
           detail="전체 편입 종목 기준"
         />
-        <MetricCard icon={Clock3} label="최근 수신" value={updatedTime} detail={error || "자동 갱신"} />
+        <MetricCard
+          icon={Clock3}
+          label="최근 수신"
+          value={updatedTime}
+          detail={error || `${Math.round((snapshot?.refreshMs || 30000) / 1000)}초 자동 갱신`}
+        />
       </section>
 
       <section className="panel ranking-panel">
