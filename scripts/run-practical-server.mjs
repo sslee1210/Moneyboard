@@ -2,28 +2,27 @@ import { spawn } from "node:child_process";
 
 const PORT = Number(process.env.PORT || 4173);
 const BASE_URL = process.env.MONEYBOARD_BASE_URL || `http://localhost:${PORT}`;
-const MONITOR_INTERVAL_MS = Math.max(15_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 30_000));
-const SNAPSHOT_TIMEOUT_MS = Math.max(60_000, Number(process.env.MONEYBOARD_SNAPSHOT_TIMEOUT_MS || 300_000));
+const MONITOR_INTERVAL_MS = Math.max(10_000, Number(process.env.MONEYBOARD_MONITOR_INTERVAL_MS || 20_000));
+const SNAPSHOT_TIMEOUT_MS = Math.max(60_000, Number(process.env.MONEYBOARD_SNAPSHOT_TIMEOUT_MS || 180_000));
 const SERVER_ENTRY = process.env.MONEYBOARD_SERVER_ENTRY || "server-focus40.js";
 
 const serverEnv = {
   ...process.env,
   STREAM_PUSH_MS: process.env.STREAM_PUSH_MS || "5000",
-  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "60000",
-  DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "60000",
-  DETAIL_CONCURRENCY: process.env.DETAIL_CONCURRENCY || "6",
-  KIS_REQUEST_TIMEOUT_MS: process.env.KIS_REQUEST_TIMEOUT_MS || "20000",
-  KIS_QUOTE_CACHE_MS: process.env.KIS_QUOTE_CACHE_MS || "60000",
+  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "30000",
+  DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "30000",
+  DETAIL_CONCURRENCY: process.env.DETAIL_CONCURRENCY || "8",
+  KIS_REQUEST_TIMEOUT_MS: process.env.KIS_REQUEST_TIMEOUT_MS || "15000",
+  KIS_QUOTE_CACHE_MS: process.env.KIS_QUOTE_CACHE_MS || "30000",
   KIS_MARKET_VERIFY_TOP_SECTORS: process.env.KIS_MARKET_VERIFY_TOP_SECTORS || "0",
   KIS_MARKET_VERIFY_TOP_STOCKS: process.env.KIS_MARKET_VERIFY_TOP_STOCKS || "0",
   KIS_SELECTED_SECTOR_STOCKS: process.env.KIS_SELECTED_SECTOR_STOCKS || "0",
   KIS_NUMERIC_SOURCE: process.env.KIS_NUMERIC_SOURCE || "api-only",
-  KIS_REST_BACKFILL_ENABLED: process.env.KIS_REST_BACKFILL_ENABLED || "true",
-  KIS_REST_BACKFILL_BATCH_SIZE: process.env.KIS_REST_BACKFILL_BATCH_SIZE || "1",
-  KIS_REST_BACKFILL_INTERVAL_MS: process.env.KIS_REST_BACKFILL_INTERVAL_MS || "2500",
-  KIS_REST_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_REST_RATE_LIMIT_COOLDOWN_MS || "8000",
-  MONEYBOARD_FOCUS_TOP_SECTORS: process.env.MONEYBOARD_FOCUS_TOP_SECTORS || "8",
-  MONEYBOARD_FOCUS_TOP_STOCKS: process.env.MONEYBOARD_FOCUS_TOP_STOCKS || "5",
+  KIS_FOCUS_SECTORS: process.env.KIS_FOCUS_SECTORS || "8",
+  KIS_FOCUS_STOCKS_PER_SECTOR: process.env.KIS_FOCUS_STOCKS_PER_SECTOR || "5",
+  KIS_FOCUS_MAX_CODES: process.env.KIS_FOCUS_MAX_CODES || "40",
+  KIS_FOCUS_BACKFILL_INTERVAL_MS: process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || "1500",
+  KIS_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_RATE_LIMIT_COOLDOWN_MS || "15000",
   KIS_REALTIME_MAX_CODES: process.env.KIS_REALTIME_MAX_CODES || "40"
 };
 
@@ -54,9 +53,7 @@ async function fetchJson(pathname, timeoutMs = 12_000) {
     } catch {
       data = { raw: text.slice(0, 300) };
     }
-    if (!response.ok) {
-      throw new Error(`${pathname} HTTP ${response.status}: ${text.slice(0, 200)}`);
-    }
+    if (!response.ok) throw new Error(`${pathname} HTTP ${response.status}: ${text.slice(0, 200)}`);
     return data;
   } finally {
     clearTimeout(timeout);
@@ -80,10 +77,7 @@ async function waitForServer() {
       const focus = provider.focusPolicy || {};
       console.log(`[doctor ${now()}] provider=${provider.provider} mode=${provider.mode} kis=${provider.kis?.enabled ? provider.kis.env : "off"}`);
       console.log(
-        `[doctor ${now()}] focus=${focus.topSectors || serverEnv.MONEYBOARD_FOCUS_TOP_SECTORS} sectors x ${focus.topStocksPerSector || serverEnv.MONEYBOARD_FOCUS_TOP_STOCKS} stocks, max=${focus.maxCodes || serverEnv.KIS_REALTIME_MAX_CODES}`
-      );
-      console.log(
-        `[doctor ${now()}] KIS REST throttle: batch=${serverEnv.KIS_REST_BACKFILL_BATCH_SIZE}, interval=${serverEnv.KIS_REST_BACKFILL_INTERVAL_MS}ms, cooldown=${serverEnv.KIS_REST_RATE_LIMIT_COOLDOWN_MS}ms, stream=${serverEnv.STREAM_PUSH_MS}ms, monitor=${MONITOR_INTERVAL_MS}ms`
+        `[doctor ${now()}] focus=${focus.topSectors ?? serverEnv.KIS_FOCUS_SECTORS} sectors x ${focus.topStocksPerSector ?? serverEnv.KIS_FOCUS_STOCKS_PER_SECTOR} stocks, max=${focus.maxCodes ?? serverEnv.KIS_FOCUS_MAX_CODES}, REST interval=${serverEnv.KIS_FOCUS_BACKFILL_INTERVAL_MS}ms`
       );
       return true;
     } catch {
@@ -96,13 +90,13 @@ async function waitForServer() {
 async function primeSnapshot() {
   if (primingStarted) return;
   primingStarted = true;
-  console.log(`[doctor ${now()}] first focus snapshot is being built automatically. KIS loads top 8 sectors x top 5 stocks after this finishes.`);
+  console.log(`[doctor ${now()}] first market snapshot is being built automatically. Focus-40 KIS backfill starts after this finishes.`);
   try {
     const snapshot = await fetchJson("/api/sectors?force=1", SNAPSHOT_TIMEOUT_MS);
     const totals = snapshot.totals || {};
     const focus = snapshot.focusPolicy || {};
     console.log(
-      `[doctor ${now()}] snapshot ready: sectors=${snapshot.sectors?.length || 0}, stocks=${totals.stockCount || 0}, focus=${totals.focusStockCount || focus.codes?.length || 0}, apiReady=${totals.apiReadyStockCount || 0}, pending=${totals.apiPendingCount || 0}`
+      `[doctor ${now()}] snapshot ready: sectors=${snapshot.sectors?.length || 0}, stocks=${totals.stockCount || 0}, focus=${focus.codes?.length || 0}, apiReady=${totals.apiReadyStockCount || 0}, pending=${totals.apiPendingCount || 0}`
     );
   } catch (error) {
     console.log(`[doctor ${now()}] snapshot build warning: ${compactError(error.message)}`);
@@ -111,9 +105,9 @@ async function primeSnapshot() {
 
 async function getValidationSnapshot() {
   const nowMs = Date.now();
-  if (lastValidation && nowMs - validationTimer < 60_000) return lastValidation;
+  if (lastValidation && nowMs - validationTimer < 30_000) return lastValidation;
   try {
-    lastValidation = await fetchJson("/api/validation", 90_000);
+    lastValidation = await fetchJson("/api/validation", 60_000);
     validationTimer = nowMs;
     return lastValidation;
   } catch (error) {
@@ -133,16 +127,16 @@ async function printDiagnostics() {
     const coverageMoved = Math.abs(coverage - lastCoverage) >= 0.001;
     lastCoverage = coverage;
 
-    const backfillLine = `focus-backfill ${backfill.cachedQuoteCount}/${backfill.universeSize} ${pct(backfill.coverageRate)} pending=${backfill.pendingSize} ok=${backfill.successCount} err=${backfill.errorCount} rateLimit=${backfill.rateLimitCount || 0} inFlight=${backfill.inFlight}`;
+    const backfillLine = `focus-backfill ${backfill.cachedQuoteCount}/${backfill.universeSize} ${pct(backfill.coverageRate)} pending=${backfill.pendingSize} ok=${backfill.successCount} err=${backfill.errorCount} rateLimit=${backfill.rateLimitCount || 0} cooldown=${Math.ceil((backfill.cooldownMsRemaining || 0) / 1000)}s`;
     const realtimeLine = `realtime connected=${realtime.connected} sub=${realtime.subscribedCount}/${realtime.maxCodes} ack=${realtime.subscribeAckCount} reject=${realtime.subscribeRejectCount} quotes=${realtime.quoteCount}`;
-    const validationLine = `validation=${validation.status || "unknown"} focus=${validation.focusStockCount ?? "?"} apiReady=${validation.apiReadyStockCount ?? "?"} apiPending=${validation.apiPendingCount ?? "?"} orderErrors=${validation.errorCount ?? "?"}`;
+    const validationLine = `validation=${validation.status || "unknown"} apiReady=${validation.apiReadyStockCount ?? "?"} apiPending=${validation.apiPendingCount ?? "?"} orderErrors=${validation.errorCount ?? "?"}`;
 
     console.log(`[doctor ${now()}] ${backfillLine} | ${realtimeLine} | ${validationLine}`);
 
-    if (backfill.lastError) console.log(`[doctor ${now()}] last KIS REST error: ${compactError(backfill.lastError)}`);
+    if (backfill.lastError) console.log(`[doctor ${now()}] last KIS REST event: ${compactError(backfill.lastError)}`);
     if (realtime.lastError) console.log(`[doctor ${now()}] last KIS WS error: ${compactError(realtime.lastError)}`);
-    if (!coverageMoved && backfill.universeSize > 0 && backfill.pendingSize > 0 && backfill.inFlight === 0) {
-      console.log(`[doctor ${now()}] focus backfill is queued but not advancing. Check KIS REST errors or API throttling.`);
+    if (!coverageMoved && backfill.universeSize > 0 && backfill.pendingSize > 0 && backfill.inFlight === 0 && !backfill.cooldownMsRemaining) {
+      console.log(`[doctor ${now()}] focus backfill is queued but not advancing. Check KIS REST status.`);
     }
   } catch (error) {
     console.log(`[doctor ${now()}] diagnostics warning: ${compactError(error.message)}`);
@@ -156,10 +150,7 @@ async function startMonitor() {
   monitorTimer = setInterval(printDiagnostics, MONITOR_INTERVAL_MS);
 }
 
-const child = spawn(process.execPath, [SERVER_ENTRY], {
-  env: serverEnv,
-  stdio: ["inherit", "pipe", "pipe"]
-});
+const child = spawn(process.execPath, [SERVER_ENTRY], { env: serverEnv, stdio: ["inherit", "pipe", "pipe"] });
 
 child.stdout.on("data", (data) => process.stdout.write(`[server] ${data}`));
 child.stderr.on("data", (data) => process.stderr.write(`[server] ${data}`));
@@ -175,7 +166,7 @@ process.on("SIGINT", () => {
 });
 process.on("SIGTERM", () => {
   if (monitorTimer) clearInterval(monitorTimer);
-  child.kill("SIGTERM");
+  child.kill("SIGINT");
 });
 
 startMonitor().catch((error) => {
