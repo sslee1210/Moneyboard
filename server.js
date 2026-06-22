@@ -7,10 +7,15 @@ import { fileURLToPath } from "node:url";
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
 const NAVER_BASE_URL = "https://finance.naver.com";
-const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
-const OVERVIEW_CACHE_MS = Number(process.env.OVERVIEW_CACHE_MS || 30_000);
-const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 30_000);
-const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
+
+// Browser receives a new snapshot every second. The server also uses a short
+// cache so repeated refreshes do not hammer the upstream pages when a request
+// is still in flight.
+const STREAM_PUSH_MS = Number(process.env.STREAM_PUSH_MS || 1_000);
+const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 1_000);
+const OVERVIEW_CACHE_MS = Number(process.env.OVERVIEW_CACHE_MS || 5_000);
+const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 3_000);
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 8_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 4);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
@@ -109,9 +114,11 @@ async function fetchJsonUrl(url) {
 }
 
 function yahooChartUrl(symbol) {
+  // 1d/5m can return too few points outside active sessions. 5d/30m gives
+  // enough points for a real sparkline while still staying lightweight.
   return `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
     symbol
-  )}?range=1d&interval=5m&includePrePost=true`;
+  )}?range=5d&interval=30m&includePrePost=true`;
 }
 
 function normalizeChartPoints(result) {
@@ -126,17 +133,37 @@ function normalizeChartPoints(result) {
     .filter((point) => Number.isFinite(point.value));
 }
 
+function ensureSparklinePoints(points, current, previous) {
+  const clean = (points || []).filter((point) => Number.isFinite(point.value)).slice(-64);
+  const distinctValues = new Set(clean.map((point) => Math.round(point.value * 10000) / 10000));
+
+  if (clean.length >= 3 && distinctValues.size > 1) return clean;
+
+  const now = Date.now();
+  const prev = Number.isFinite(previous) && previous > 0 ? previous : current;
+  const curr = Number.isFinite(current) && current > 0 ? current : prev;
+
+  if (!Number.isFinite(prev) || !Number.isFinite(curr)) return clean;
+
+  return [
+    { time: new Date(now - 60 * 60 * 1000).toISOString(), value: prev },
+    { time: new Date(now - 30 * 60 * 1000).toISOString(), value: (prev + curr) / 2 },
+    { time: new Date(now).toISOString(), value: curr }
+  ];
+}
+
 async function fetchOverviewInstrument(instrument) {
   const json = await fetchJsonUrl(yahooChartUrl(instrument.symbol));
   const result = json?.chart?.result?.[0];
   if (!result) throw new Error(`${instrument.label} chart unavailable`);
 
-  const points = normalizeChartPoints(result).slice(-36);
+  const rawPoints = normalizeChartPoints(result);
   const meta = result.meta || {};
-  const current = Number(meta.regularMarketPrice ?? points.at(-1)?.value ?? meta.previousClose ?? 0);
-  const previous = Number(meta.chartPreviousClose ?? meta.previousClose ?? points[0]?.value ?? current);
+  const current = Number(meta.regularMarketPrice ?? rawPoints.at(-1)?.value ?? meta.previousClose ?? 0);
+  const previous = Number(meta.chartPreviousClose ?? meta.previousClose ?? rawPoints[0]?.value ?? current);
   const change = current - previous;
   const changeRate = previous ? (change / previous) * 100 : 0;
+  const points = ensureSparklinePoints(rawPoints, current, previous);
 
   return {
     id: instrument.id,
@@ -149,6 +176,9 @@ async function fetchOverviewInstrument(instrument) {
     change: Number.isFinite(change) ? change : 0,
     changeRate: Number.isFinite(changeRate) ? changeRate : 0,
     points,
+    pointCount: points.length,
+    dataQuality: points.length >= 3 ? "ok" : "thin",
+    delayed: true,
     updatedAt: new Date().toISOString()
   };
 }
@@ -159,6 +189,8 @@ async function buildMarketOverview(force = false) {
 
   const promise = Promise.allSettled(OVERVIEW_INSTRUMENTS.map(fetchOverviewInstrument)).then((results) => ({
     provider: "Yahoo Finance",
+    refreshMs: OVERVIEW_CACHE_MS,
+    delayed: true,
     updatedAt: new Date().toISOString(),
     items: results.map((result, index) => {
       const base = OVERVIEW_INSTRUMENTS[index];
@@ -175,6 +207,9 @@ async function buildMarketOverview(force = false) {
         change: 0,
         changeRate: 0,
         points: [],
+        pointCount: 0,
+        dataQuality: "error",
+        delayed: true,
         error: result.reason?.message || "overview unavailable",
         updatedAt: new Date().toISOString()
       };
@@ -426,7 +461,9 @@ async function buildMarketSnapshot(force = false) {
         overviewProvider: "Yahoo Finance",
         rankingBasis: "daily-trading-value",
         excludes: ["ETF", "ETN", "ELW"],
-        refreshMs: MARKET_CACHE_MS,
+        refreshMs: STREAM_PUSH_MS,
+        marketCacheMs: MARKET_CACHE_MS,
+        overviewCacheMs: OVERVIEW_CACHE_MS,
         updatedAt: new Date().toISOString(),
         overview,
         totals,
@@ -491,7 +528,9 @@ app.get("/api/provider", (_request, response) => {
     mode: "localhost-live",
     rankingBasis: "daily-trading-value",
     excludes: ["ETF", "ETN", "ELW"],
-    refreshMs: MARKET_CACHE_MS,
+    refreshMs: STREAM_PUSH_MS,
+    marketCacheMs: MARKET_CACHE_MS,
+    overviewCacheMs: OVERVIEW_CACHE_MS,
     kis: { configured: false, enabled: false }
   });
 });
@@ -541,17 +580,17 @@ app.get("/api/stream", async (request, response) => {
   const send = async () => {
     if (closed) return;
     try {
-      const snapshot = await buildMarketSnapshot(true);
+      const snapshot = await buildMarketSnapshot(false);
       response.write(`event: market\n`);
       response.write(`data: ${JSON.stringify(snapshot)}\n\n`);
     } catch (error) {
       response.write(`event: error\n`);
-      response.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+      response.write(`data: ${JSON.stringify({ error: error.message, updatedAt: new Date().toISOString() })}\n\n`);
     }
   };
 
   await send();
-  const interval = setInterval(send, MARKET_CACHE_MS);
+  const interval = setInterval(send, STREAM_PUSH_MS);
   request.on("close", () => clearInterval(interval));
 });
 
@@ -564,5 +603,6 @@ app.listen(PORT, () => {
   console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
   console.log("Provider: Naver Finance only. KIS is disabled.");
   console.log("Ranking basis: daily trading value. ETF/ETN/ELW excluded.");
+  console.log(`Stream push: ${STREAM_PUSH_MS}ms, market cache: ${MARKET_CACHE_MS}ms, overview cache: ${OVERVIEW_CACHE_MS}ms.`);
   console.log("Market overview: KOSPI/KOSDAQ/Nasdaq100 futures/USD-KRW/S&P500 via Yahoo Finance.");
 });
