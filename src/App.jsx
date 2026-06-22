@@ -16,8 +16,6 @@ import {
   BarChart,
   CartesianGrid,
   Cell,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -34,7 +32,7 @@ const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$
 const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port);
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
-const apiFallbackPollMs = 30_000;
+const apiFallbackPollMs = 1_000;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
@@ -79,6 +77,19 @@ function formatOverviewValue(item) {
   return percentFormatter.format(value);
 }
 
+function formatTime(value) {
+  if (!value) return "--:--:--";
+  try {
+    return new Intl.DateTimeFormat("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(value));
+  } catch {
+    return "--:--:--";
+  }
+}
+
 function overviewItems(overview) {
   const preferredOrder = ["kospi", "kosdaq", "nasdaq100-futures", "usd-krw", "sp500"];
   const items = overview?.items || [];
@@ -112,6 +123,26 @@ function sortStocksByTradingValue(stocks = []) {
   });
 }
 
+function sparklinePath(points, width = 180, height = 46, padding = 3) {
+  const values = points
+    .map((point) => Number(point.value))
+    .filter((value) => Number.isFinite(value));
+
+  if (values.length < 2) return "";
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || Math.max(Math.abs(max) * 0.001, 1);
+
+  return values
+    .map((value, index) => {
+      const x = padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2);
+      const y = padding + (1 - (value - min) / range) * (height - padding * 2);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
 function useMarketStream() {
   const [snapshot, setSnapshot] = useState(null);
   const [streamState, setStreamState] = useState("connecting");
@@ -132,7 +163,7 @@ function useMarketStream() {
     const poll = async () => {
       try {
         const data = await fetchJson(apiUrl("/api/sectors"));
-        applySnapshot(data, "polling", "자동 갱신");
+        applySnapshot(data, "polling", "1초 폴링 갱신");
       } catch (pollError) {
         if (!closed) {
           setStreamState("offline");
@@ -157,7 +188,7 @@ function useMarketStream() {
     });
     stream.addEventListener("market", (event) => {
       try {
-        applySnapshot(JSON.parse(event.data), "live", "실시간 갱신");
+        applySnapshot(JSON.parse(event.data), "live", "1초 스트림 갱신");
       } catch (parseError) {
         if (!closed) setError(parseError.message);
       }
@@ -165,7 +196,7 @@ function useMarketStream() {
     stream.addEventListener("error", () => {
       if (!closed) {
         setStreamState("polling");
-        setError("실시간 연결 끊김 · 폴링 전환");
+        setError("스트림 연결 끊김 · 1초 폴링 전환");
         stream?.close();
         void poll();
       }
@@ -188,10 +219,10 @@ function MarketOverviewStrip({ overview }) {
     <section className="market-overview-strip" aria-label="시장 주요 지표">
       {items.map((item) => {
         const changeRate = item.changeRate || 0;
-        const chartData = (item.points || []).map((point, index) => ({
-          index,
-          value: point.value,
-        }));
+        const points = item.points || [];
+        const path = sparklinePath(points);
+        const qualityLabel =
+          item.dataQuality === "ok" ? `${item.pointCount || points.length}p` : "지연/부족";
 
         return (
           <article className={`market-overview-card ${changeClass(changeRate)}`} key={item.id}>
@@ -203,23 +234,13 @@ function MarketOverviewStrip({ overview }) {
               <strong>{formatOverviewValue(item)}</strong>
               <small className={changeClass(changeRate)}>{formatPercent(changeRate)}</small>
             </div>
-            <div className="market-overview-chart">
-              {chartData.length > 1 ? (
-                <ResponsiveContainer width="100%" height={42}>
-                  <LineChart data={chartData} margin={{ top: 5, right: 0, bottom: 2, left: 0 }}>
-                    <Line
-                      dataKey="value"
-                      dot={false}
-                      isAnimationActive={false}
-                      stroke={changeRate >= 0 ? "#ff6565" : "#5da2ff"}
-                      strokeWidth={2}
-                      type="monotone"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              ) : (
-                <span className="market-overview-empty">chart pending</span>
-              )}
+            <svg className="market-sparkline" viewBox="0 0 180 46" preserveAspectRatio="none" role="img">
+              <line x1="0" y1="23" x2="180" y2="23" />
+              {path ? <path d={path} /> : null}
+            </svg>
+            <div className="market-overview-foot">
+              <span>{item.provider || overview?.provider || "source"}</span>
+              <span>{qualityLabel} · {formatTime(item.updatedAt || overview?.updatedAt)}</span>
             </div>
           </article>
         );
@@ -248,7 +269,7 @@ function RankStar({ rank }) {
   return (
     <Star
       className={`rank-star ${rank === 1 ? "gold" : "silver"}`}
-      size={15}
+      size={16}
       fill="currentColor"
       aria-label={`${rank}위`}
     />
@@ -302,7 +323,7 @@ function SectorTradingCard({ sector, selected, maxTradingValue, onSelect }) {
 
       <div className="sector-card-sub">
         <span>거래량 {formatVolume(sector.volume)}</span>
-        <span>일반 종목 기준</span>
+        <span>1초 갱신</span>
       </div>
 
       <div className="top-stock-list">
@@ -335,18 +356,18 @@ function TopTradingPanel({ sectors }) {
         </div>
       </div>
       <div className="leader-chart">
-        <ResponsiveContainer width="100%" height={270}>
-          <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 12, bottom: 0, left: 0 }}>
-            <CartesianGrid stroke="#26394c" vertical={false} />
-            <XAxis type="number" tick={{ fontSize: 11, fill: "#a6b7c8" }} tickFormatter={formatTradingValue} />
-            <YAxis dataKey="name" type="category" tick={{ fontSize: 12, fill: "#eef5fb" }} width={102} />
+        <ResponsiveContainer width="100%" height={280}>
+          <BarChart data={chartData} layout="vertical" margin={{ top: 4, right: 14, bottom: 0, left: 4 }}>
+            <CartesianGrid stroke="#38516a" vertical={false} />
+            <XAxis type="number" tick={{ fontSize: 13, fill: "#d5e3ef" }} tickFormatter={formatTradingValue} />
+            <YAxis dataKey="name" type="category" tick={{ fontSize: 14, fill: "#ffffff" }} width={118} />
             <Tooltip
-              contentStyle={{ background: "#101b27", border: "1px solid #39506a", color: "#f4f8fb" }}
+              contentStyle={{ background: "#12202d", border: "1px solid #5a7894", color: "#ffffff" }}
               formatter={(value, name) => (name === "거래대금" ? formatTradingValue(value) : `${value}%`)}
             />
             <Bar dataKey="거래대금" radius={[0, 4, 4, 0]}>
               {chartData.map((entry) => (
-                <Cell key={entry.name} fill={entry.등락률 >= 0 ? "#f05d5d" : "#4f9dff"} />
+                <Cell key={entry.name} fill={entry.등락률 >= 0 ? "#ff6d6d" : "#65a9ff"} />
               ))}
             </Bar>
           </BarChart>
@@ -356,8 +377,9 @@ function TopTradingPanel({ sectors }) {
   );
 }
 
-function SelectedSectorPanel({ sector }) {
-  const changeRate = sector?.weightedChangeRate ?? sector?.changeRate ?? 0;
+function SelectedSectorPanel({ sector, detail, loading }) {
+  const changeRate = detail?.weightedChangeRate ?? sector?.weightedChangeRate ?? sector?.changeRate ?? 0;
+
   return (
     <section className="panel selected-sector-panel">
       <div className="panel-header compact">
@@ -365,30 +387,43 @@ function SelectedSectorPanel({ sector }) {
           <span>Selected Sector</span>
           <h2>{sector?.name || "섹터 선택"}</h2>
         </div>
+        <div className={`sync-badge ${loading ? "loading" : "live"}`}>
+          <i />
+          {loading ? "갱신 중" : "동기화"}
+        </div>
       </div>
       <div className="selected-stats">
         <div>
           <span>당일 거래대금</span>
-          <strong>{formatTradingValue(sector?.tradingValueMillion)}</strong>
+          <strong>{formatTradingValue(detail?.tradingValueMillion ?? sector?.tradingValueMillion)}</strong>
           <small>ETF/ETN/ELW 제외</small>
         </div>
         <div>
           <span>거래량</span>
-          <strong>{formatVolume(sector?.volume)}</strong>
+          <strong>{formatVolume(detail?.volume ?? sector?.volume)}</strong>
           <small>일반 종목 기준</small>
         </div>
         <div>
           <span>가중 등락률</span>
           <strong className={changeClass(changeRate)}>{formatPercent(changeRate)}</strong>
-          <small>상승/하락 {sector?.risingCount || 0}/{sector?.fallingCount || 0}</small>
+          <small>상승/보합/하락 {sector?.risingCount || 0}/{sector?.flatCount || 0}/{sector?.fallingCount || 0}</small>
         </div>
       </div>
     </section>
   );
 }
 
-function SelectedStocksTable({ sector }) {
-  const stocks = sortStocksByTradingValue(sector?.stocks || []).slice(0, 20);
+function SelectedStocksPanel({ sector, detail, loading }) {
+  const stocks = useMemo(() => {
+    const source = detail?.stocks?.length
+      ? detail.stocks
+      : sector?.stocks?.length
+        ? sector.stocks
+        : sector?.topTradingValueStocks?.length
+          ? sector.topTradingValueStocks
+          : sector?.topStocks || [];
+    return sortStocksByTradingValue(source).slice(0, 20);
+  }, [detail?.stocks, sector?.stocks, sector?.topTradingValueStocks, sector?.topStocks]);
 
   return (
     <section className="panel selected-stocks-panel">
@@ -397,7 +432,12 @@ function SelectedStocksTable({ sector }) {
           <span>Selected Sector Stocks</span>
           <h2>{sector?.name || "선택 섹터"} 거래대금 상위 종목</h2>
         </div>
+        <div className={`sync-badge ${loading ? "loading" : "live"}`}>
+          <i />
+          {loading ? "상세 수집" : "상세 동기화"}
+        </div>
       </div>
+
       <div className="stock-table-wrap">
         <table>
           <thead>
@@ -413,7 +453,7 @@ function SelectedStocksTable({ sector }) {
           </thead>
           <tbody>
             {stocks.map((stock, index) => (
-              <tr key={stock.code}>
+              <tr key={stock.code || `${stock.name}-${index}`}>
                 <td>{index + 1}</td>
                 <td>
                   <a href={stock.naverUrl} target="_blank" rel="noreferrer">
@@ -425,7 +465,7 @@ function SelectedStocksTable({ sector }) {
                 <td className={changeClass(stock.changeRate)}>{formatPercent(stock.changeRate)}</td>
                 <td>{formatTradingValue(stock.tradeAmountMillion)}</td>
                 <td>{formatVolume(stock.volume)}</td>
-                <td>{stock.market}</td>
+                <td>{stock.market || "-"}</td>
               </tr>
             ))}
           </tbody>
@@ -439,9 +479,12 @@ function LoadingState({ error }) {
   return (
     <main className="moneyboard-app">
       <section className="panel empty-state">
-        <span className="brand">Moneyboard</span>
+        <span className="brand">
+          <BarChart3 size={22} />
+          Moneyboard
+        </span>
         <h1>데이터 수신 대기 중</h1>
-        <p>localhost:4173 서버는 켜졌지만 아직 시장 스냅샷을 받지 못했습니다.</p>
+        <p>서버가 켜져 있으면 1~5초 안에 네이버 금융 섹터 스냅샷을 수신합니다.</p>
         {error && <code>{error}</code>}
       </section>
     </main>
@@ -451,7 +494,10 @@ function LoadingState({ error }) {
 export default function App() {
   const { snapshot, streamState, error } = useMarketStream();
   const [selectedId, setSelectedId] = useState("");
+  const [manualSelection, setManualSelection] = useState(false);
   const [query, setQuery] = useState("");
+  const [sectorDetail, setSectorDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const rankedSectors = useMemo(() => {
     return sortSectorsByTradingValue(snapshot?.sectors || []).map((sector, index) => ({
@@ -460,43 +506,82 @@ export default function App() {
     }));
   }, [snapshot]);
 
+  const defaultSector = rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
+  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
+
   const filteredSectors = useMemo(() => {
     const keyword = query.trim().toLowerCase();
-    const base = rankedSectors.slice(0, 12);
-    if (!keyword) return base;
+    const topTwelve = rankedSectors.slice(0, 12);
+    if (!keyword) return topTwelve;
     return rankedSectors
       .filter((sector) => {
-        const stockNames = (sector.stocks || []).map((stock) => stock.name).join(" ");
+        const stockNames = [
+          ...(sector.stocks || []),
+          ...(sector.topTradingValueStocks || []),
+          ...(sector.topStocks || []),
+        ]
+          .map((stock) => stock.name)
+          .join(" ");
         return `${sector.name} ${stockNames}`.toLowerCase().includes(keyword);
       })
       .slice(0, 12);
   }, [rankedSectors, query]);
 
-  const selectedSector =
-    rankedSectors.find((sector) => sector.id === selectedId) || rankedSectors[0] || null;
   const maxTradingValue = rankedSectors[0]?.tradingValueMillion || 0;
 
   useEffect(() => {
-    if (!selectedId && rankedSectors[0]?.id) setSelectedId(rankedSectors[0].id);
-  }, [rankedSectors, selectedId]);
+    const topSectorId = rankedSectors.find((sector) => sector.name !== "기타")?.id || rankedSectors[0]?.id;
+    if (topSectorId && (!selectedId || (!manualSelection && selectedId !== topSectorId))) {
+      setSelectedId(topSectorId);
+    }
+  }, [manualSelection, rankedSectors, selectedId]);
 
-  if (!snapshot || !Array.isArray(snapshot.sectors)) return <LoadingState error={error} />;
+  useEffect(() => {
+    if (!selectedSector?.id) return;
+
+    let cancelled = false;
+
+    async function loadDetail() {
+      setDetailLoading(true);
+      try {
+        const data = await fetchJson(apiUrl(`/api/sectors/${selectedSector.id}`));
+        if (!cancelled) setSectorDetail(data);
+      } catch {
+        if (!cancelled) setSectorDetail(selectedSector);
+      } finally {
+        if (!cancelled) setDetailLoading(false);
+      }
+    }
+
+    void loadDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSector?.id, snapshot?.updatedAt]);
+
+  if (!snapshot || !Array.isArray(snapshot.sectors)) {
+    return <LoadingState error={error} />;
+  }
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
-  const updatedTime = snapshot?.updatedAt
-    ? new Intl.DateTimeFormat("ko-KR", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }).format(new Date(snapshot.updatedAt))
-    : "--:--:--";
-  const streamLabel = streamState === "live" ? "LIVE" : streamState === "polling" ? "AUTO" : "OFFLINE";
+  const updatedTime = formatTime(snapshot?.updatedAt);
+  const streamLabel =
+    streamState === "live"
+      ? "LIVE"
+      : streamState === "polling"
+        ? "POLLING"
+        : streamState === "static"
+          ? "SNAPSHOT"
+          : "OFFLINE";
 
   return (
     <main className="moneyboard-app">
       <header className="app-header">
         <div>
-          <span className="brand"><BarChart3 size={22} /> Moneyboard</span>
+          <span className="brand">
+            <BarChart3 size={22} />
+            Moneyboard
+          </span>
           <h1>국내 섹터 거래대금 모니터</h1>
         </div>
         <div className={`stream-pill ${streamState}`}>
@@ -512,13 +597,17 @@ export default function App() {
           icon={Database}
           label="시장 거래대금"
           value={formatTradingValue(snapshot?.totals?.tradingValueMillion)}
-          detail={`${snapshot?.totals?.sectorCount || 0}개 섹터 · ETF/ETN 제외`}
+          detail={`${snapshot?.totals?.sectorCount || 0}개 섹터 · ETF/ETN/ELW 제외`}
         />
         <MetricCard
           icon={TrendingUp}
           label="최대 거래대금 섹터"
           value={rankedSectors[0]?.name || "집계 중"}
-          detail={rankedSectors[0] ? `${formatTradingValue(rankedSectors[0].tradingValueMillion)} · ${formatVolume(rankedSectors[0].volume)}` : "대기"}
+          detail={
+            rankedSectors[0]
+              ? `${formatTradingValue(rankedSectors[0].tradingValueMillion)} · ${formatVolume(rankedSectors[0].volume)}`
+              : "대기"
+          }
         />
         <MetricCard
           icon={Activity}
@@ -530,7 +619,7 @@ export default function App() {
           icon={Clock3}
           label="최근 수신"
           value={updatedTime}
-          detail={error || `${Math.round((snapshot?.refreshMs || 30000) / 1000)}초 자동 갱신`}
+          detail={error || `${Math.round((snapshot?.refreshMs || 1000) / 1000)}초 자동 갱신`}
         />
       </section>
 
@@ -540,11 +629,16 @@ export default function App() {
             <span>Trading Value Ranking</span>
             <h2>거래대금 랭킹 섹터 12</h2>
           </div>
-          <label className="search-box">
+          <div className="search-box">
             <Search size={16} />
-            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
-          </label>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="섹터/종목 검색"
+            />
+          </div>
         </div>
+
         <div className="sector-grid-12">
           {filteredSectors.map((sector) => (
             <SectorTradingCard
@@ -552,7 +646,10 @@ export default function App() {
               sector={sector}
               selected={sector.id === selectedSector?.id}
               maxTradingValue={maxTradingValue}
-              onSelect={(nextSector) => setSelectedId(nextSector.id)}
+              onSelect={(nextSector) => {
+                setManualSelection(true);
+                setSelectedId(nextSector.id);
+              }}
             />
           ))}
         </div>
@@ -560,13 +657,22 @@ export default function App() {
 
       <section className="below-ranking">
         <TopTradingPanel sectors={rankedSectors} />
-        <SelectedSectorPanel sector={selectedSector} />
+        <SelectedSectorPanel
+          sector={selectedSector}
+          detail={sectorDetail}
+          loading={detailLoading}
+        />
       </section>
 
-      <SelectedStocksTable sector={selectedSector} />
+      <SelectedStocksPanel
+        sector={selectedSector}
+        detail={sectorDetail}
+        loading={detailLoading}
+      />
 
       <footer>
-        데이터는 네이버 금융 업종별 시세를 기반으로 로컬 서버에서 자동 집계합니다. ETF/ETN/ELW는 거래대금 취합과 랭킹에서 제외합니다. KIS API는 사용하지 않습니다.
+        섹터/종목 데이터는 네이버 금융 업종별 시세를 기반으로 로컬 서버에서 1초 단위로 자동 동기화합니다.
+        최상단 지수/환율은 Yahoo Finance 차트 데이터이며 지연 또는 보정 표시가 있을 수 있습니다. KIS API는 사용하지 않습니다.
       </footer>
     </main>
   );
