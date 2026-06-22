@@ -3,7 +3,6 @@ import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { enrichStocksWithKis, getKisQuote, getKisStatus, getKisVolumeProfile, isKisConfigured } from "./kisClient.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
@@ -12,17 +11,14 @@ const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
 const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 8);
-const KIS_DETAIL_QUOTE_LIMIT = Number(process.env.KIS_DETAIL_QUOTE_LIMIT || 20);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const marketCache = {
-  data: null,
-  expiresAt: 0,
-  promise: null
-};
+
+const marketCache = { data: null, expiresAt: 0, promise: null };
 const detailCache = new Map();
+
 const allowedOrigins = new Set([
   "http://localhost:4173",
   "http://127.0.0.1:4173",
@@ -34,10 +30,8 @@ const allowedOrigins = new Set([
 function isAllowedOrigin(origin) {
   if (!origin) return false;
   if (allowedOrigins.has(origin)) return true;
-
   try {
-    const { hostname } = new URL(origin);
-    return hostname.endsWith(".github.io");
+    return new URL(origin).hostname.endsWith(".github.io");
   } catch {
     return false;
   }
@@ -53,7 +47,8 @@ function compactText(value) {
 function parseNumber(value) {
   const normalized = compactText(value).replace(/,/g, "").replace(/[^\d.-]/g, "");
   if (!normalized || normalized === "-" || normalized === ".") return 0;
-  return Number(normalized);
+  const number = Number(normalized);
+  return Number.isFinite(number) ? number : 0;
 }
 
 function parsePercent(value) {
@@ -72,18 +67,16 @@ async function fetchHtml(pathname) {
     const response = await fetch(formatNaverPath(pathname), {
       signal: controller.signal,
       headers: {
-        "accept": "text/html,application/xhtml+xml",
+        accept: "text/html,application/xhtml+xml",
         "accept-language": "ko-KR,ko;q=0.9,en-US;q=0.6,en;q=0.4",
         "cache-control": "no-cache",
-        "referer": `${NAVER_BASE_URL}/sise/`,
+        referer: `${NAVER_BASE_URL}/sise/`,
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
       }
     });
 
-    if (!response.ok) {
-      throw new Error(`Naver Finance responded with ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Naver Finance responded with ${response.status}`);
 
     const buffer = Buffer.from(await response.arrayBuffer());
     const contentType = response.headers.get("content-type") || "";
@@ -94,11 +87,7 @@ async function fetchHtml(pathname) {
     }
 
     const utf8Text = buffer.toString("utf8");
-    if (utf8Text.includes("�")) {
-      return iconv.decode(buffer, "euc-kr");
-    }
-
-    return utf8Text;
+    return utf8Text.includes("�") ? iconv.decode(buffer, "euc-kr") : utf8Text;
   } finally {
     clearTimeout(timeout);
   }
@@ -114,8 +103,8 @@ function parseSectorList(html) {
     const url = new URL(href, NAVER_BASE_URL);
     const id = url.searchParams.get("no");
     const name = compactText($(anchor).text());
-    const row = $(anchor).closest("tr");
-    const cells = row
+    const cells = $(anchor)
+      .closest("tr")
       .find("td")
       .map((__, cell) => compactText($(cell).text()))
       .get();
@@ -169,6 +158,7 @@ function parseSectorDetail(html, sector) {
       previousVolume: parseNumber(cells[8]),
       market: compactText($(nameCell).find(".dot").text()) === "*" ? "KOSDAQ" : "KOSPI",
       direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
+      provider: "Naver Finance",
       naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
     });
   });
@@ -179,8 +169,7 @@ function parseSectorDetail(html, sector) {
   const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
   const weightedChangeRate =
     tradingValueMillion > 0
-      ? stocks.reduce((sum, stock) => sum + stock.changeRate * stock.tradeAmountMillion, 0) /
-        tradingValueMillion
+      ? stocks.reduce((sum, stock) => sum + stock.changeRate * stock.tradeAmountMillion, 0) / tradingValueMillion
       : sector.changeRate;
 
   return {
@@ -190,41 +179,8 @@ function parseSectorDetail(html, sector) {
     weightedChangeRate,
     topStocks: stocks.slice(0, 8),
     stocks,
+    provider: "Naver Finance",
     fetchedAt: new Date().toISOString()
-  };
-}
-
-function recalculateSectorDetail(detail, stocks, provider = null) {
-  const tradingValueMillion = stocks.reduce((sum, stock) => sum + stock.tradeAmountMillion, 0);
-  const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
-  const weightedChangeRate =
-    tradingValueMillion > 0
-      ? stocks.reduce((sum, stock) => sum + stock.changeRate * stock.tradeAmountMillion, 0) /
-        tradingValueMillion
-      : detail.changeRate;
-
-  return {
-    ...detail,
-    tradingValueMillion,
-    volume,
-    weightedChangeRate,
-    topStocks: stocks.slice(0, 8),
-    stocks,
-    provider: provider || detail.provider || "Naver Finance",
-    fetchedAt: new Date().toISOString()
-  };
-}
-
-async function enrichSectorDetail(detail) {
-  if (!isKisConfigured()) return detail;
-  const stocks = await enrichStocksWithKis(detail.stocks, { limit: KIS_DETAIL_QUOTE_LIMIT });
-  return {
-    ...recalculateSectorDetail(detail, stocks, "KIS + Naver Finance"),
-    kis: {
-      enabled: true,
-      quoteLimit: KIS_DETAIL_QUOTE_LIMIT,
-      enrichedAt: new Date().toISOString()
-    }
   };
 }
 
@@ -246,51 +202,39 @@ async function mapLimit(items, limit, mapper) {
 
 async function getSectorDetail(sector, options = false) {
   const force = typeof options === "boolean" ? options : Boolean(options.force);
-  const enrichKis = typeof options === "object" && Boolean(options.enrichKis);
-  const cacheKey = enrichKis ? `${sector.id}:kis` : sector.id;
+  const cacheKey = sector.id;
   const cached = detailCache.get(cacheKey);
-  if (!force && cached?.data && cached.expiresAt > Date.now()) {
-    return cached.data;
-  }
-  if (!force && cached?.promise) {
-    return cached.promise;
-  }
+
+  if (!force && cached?.data && cached.expiresAt > Date.now()) return cached.data;
+  if (!force && cached?.promise) return cached.promise;
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
     .then((html) => parseSectorDetail(html, sector))
-    .then((data) => (enrichKis ? enrichSectorDetail(data) : data))
     .then((data) => {
-      detailCache.set(cacheKey, {
-        data,
-        expiresAt: Date.now() + DETAIL_CACHE_MS,
-        promise: null
-      });
+      detailCache.set(cacheKey, { data, expiresAt: Date.now() + DETAIL_CACHE_MS, promise: null });
       return data;
     })
     .catch((error) => {
+      const fallback = cached?.data || {
+        ...sector,
+        tradingValueMillion: 0,
+        volume: 0,
+        weightedChangeRate: sector.changeRate,
+        topStocks: [],
+        stocks: [],
+        provider: "Naver Finance",
+        fetchedAt: new Date().toISOString(),
+        error: error.message
+      };
       detailCache.set(cacheKey, {
-        data: cached?.data || {
-          ...sector,
-          tradingValueMillion: 0,
-          volume: 0,
-          weightedChangeRate: sector.changeRate,
-          topStocks: [],
-          stocks: [],
-          fetchedAt: new Date().toISOString(),
-          error: error.message
-        },
+        data: fallback,
         expiresAt: Date.now() + Math.min(DETAIL_CACHE_MS, 10_000),
         promise: null
       });
-      return detailCache.get(cacheKey).data;
+      return fallback;
     });
 
-  detailCache.set(cacheKey, {
-    data: cached?.data,
-    expiresAt: cached?.expiresAt || 0,
-    promise
-  });
-
+  detailCache.set(cacheKey, { data: cached?.data, expiresAt: cached?.expiresAt || 0, promise });
   return promise;
 }
 
@@ -334,6 +278,7 @@ async function buildMarketSnapshot() {
 
   return {
     updatedAt: new Date().toISOString(),
+    mode: "localhost-live",
     source: {
       name: "Naver Finance",
       url: `${NAVER_BASE_URL}/sise/sise_group.naver?type=upjong`,
@@ -350,12 +295,8 @@ async function buildMarketSnapshot() {
 }
 
 async function getMarketSnapshot() {
-  if (marketCache.data && marketCache.expiresAt > Date.now()) {
-    return marketCache.data;
-  }
-  if (marketCache.promise) {
-    return marketCache.promise;
-  }
+  if (marketCache.data && marketCache.expiresAt > Date.now()) return marketCache.data;
+  if (marketCache.promise) return marketCache.promise;
 
   marketCache.promise = buildMarketSnapshot()
     .then((data) => {
@@ -366,73 +307,77 @@ async function getMarketSnapshot() {
     })
     .catch((error) => {
       marketCache.promise = null;
-      if (marketCache.data) {
-        return {
-          ...marketCache.data,
-          stale: true,
-          error: error.message
-        };
-      }
+      if (marketCache.data) return { ...marketCache.data, stale: true, error: error.message };
       throw error;
     });
 
   return marketCache.promise;
 }
 
+function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
+  const items = (stocks || []).slice(0, limit).map((stock) => ({
+    code: stock.code,
+    name: stock.name,
+    day: stock.volume || 0,
+    week: stock.periodVolumes?.week ?? null,
+    month: stock.periodVolumes?.month ?? null
+  }));
+
+  return {
+    sampleSize: items.length,
+    limit,
+    provider: "Naver Finance",
+    byCode: Object.fromEntries(items.map((item) => [item.code, item])),
+    counts: {
+      day: items.filter((item) => item.day !== null && item.day !== undefined).length,
+      week: items.filter((item) => item.week !== null && item.week !== undefined).length,
+      month: items.filter((item) => item.month !== null && item.month !== undefined).length
+    },
+    totals: {
+      day: items.reduce((sum, item) => sum + (item.day || 0), 0),
+      week: items.reduce((sum, item) => sum + (item.week || 0), 0),
+      month: items.reduce((sum, item) => sum + (item.month || 0), 0)
+    },
+    updatedAt: new Date().toISOString()
+  };
+}
+
 app.use((request, response, next) => {
   const origin = request.headers.origin;
-
   if (isAllowedOrigin(origin)) {
     response.setHeader("Access-Control-Allow-Origin", origin);
     response.setHeader("Vary", "Origin");
   }
-
-  response.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
   if (request.method === "OPTIONS") {
     response.sendStatus(204);
     return;
   }
-
   next();
 });
 
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_, response) => {
-  response.json({ ok: true, now: new Date().toISOString() });
+  response.json({ ok: true, mode: "localhost-live", provider: "Naver Finance", now: new Date().toISOString() });
 });
 
 app.get("/api/provider", (_, response) => {
   response.json({
     market: "Naver Finance",
-    sectorDetail: isKisConfigured() ? "KIS + Naver Finance" : "Naver Finance",
-    volumeProfile: isKisConfigured() ? "KIS" : "static/client-fallback",
-    kis: getKisStatus()
+    sectorDetail: "Naver Finance",
+    volumeProfile: "Naver Finance day-volume only",
+    kis: { configured: false, enabled: false }
   });
-});
-
-app.get("/api/kis/quote/:code", async (request, response) => {
-  try {
-    response.json(await getKisQuote(request.params.code));
-  } catch (error) {
-    response.status(isKisConfigured() ? 502 : 503).json({
-      message: "Failed to load KIS quote",
-      error: error.message,
-      kis: getKisStatus()
-    });
-  }
 });
 
 app.get("/api/sectors", async (_, response) => {
   try {
     response.json(await getMarketSnapshot());
   } catch (error) {
-    response.status(502).json({
-      message: "Failed to load market data",
-      error: error.message
-    });
+    response.status(502).json({ message: "Failed to load market data", error: error.message });
   }
 });
 
@@ -440,47 +385,26 @@ app.get("/api/sectors/:id", async (request, response) => {
   try {
     const snapshot = await getMarketSnapshot();
     const sector = snapshot.sectors.find((item) => item.id === request.params.id);
-
     if (!sector) {
       response.status(404).json({ message: "Sector not found" });
       return;
     }
-
-    response.json(await getSectorDetail(sector, { force: true, enrichKis: true }));
+    response.json(await getSectorDetail(sector, { force: true }));
   } catch (error) {
-    response.status(502).json({
-      message: "Failed to load sector detail",
-      error: error.message
-    });
+    response.status(502).json({ message: "Failed to load sector detail", error: error.message });
   }
 });
 
-app.post("/api/volume-profile", async (request, response) => {
-  try {
-    if (!isKisConfigured()) {
-      response.status(503).json({
-        message: "KIS is not configured",
-        kis: getKisStatus()
-      });
-      return;
-    }
-
-    const stocks = Array.isArray(request.body?.stocks) ? request.body.stocks : [];
-    const limit = Number(request.body?.limit || VOLUME_HISTORY_LIMIT);
-    response.json(await getKisVolumeProfile(stocks, { limit }));
-  } catch (error) {
-    response.status(502).json({
-      message: "Failed to load KIS volume profile",
-      error: error.message,
-      kis: getKisStatus()
-    });
-  }
+app.post("/api/volume-profile", (request, response) => {
+  const stocks = Array.isArray(request.body?.stocks) ? request.body.stocks : [];
+  const limit = Number(request.body?.limit || VOLUME_HISTORY_LIMIT);
+  response.json(buildVolumeProfile(stocks, limit));
 });
 
 app.get("/api/stream", async (request, response) => {
   response.writeHead(200, {
     "Cache-Control": "no-cache, no-transform",
-    "Connection": "keep-alive",
+    Connection: "keep-alive",
     "Content-Type": "text/event-stream",
     "X-Accel-Buffering": "no"
   });
@@ -488,10 +412,10 @@ app.get("/api/stream", async (request, response) => {
   const sendSnapshot = async () => {
     try {
       const payload = await getMarketSnapshot();
-      response.write(`event: market\n`);
+      response.write("event: market\n");
       response.write(`data: ${JSON.stringify(payload)}\n\n`);
     } catch (error) {
-      response.write(`event: error\n`);
+      response.write("event: error\n");
       response.write(`data: ${JSON.stringify({ message: error.message })}\n\n`);
     }
   };
@@ -508,7 +432,6 @@ app.use((request, response, next) => {
     next();
     return;
   }
-
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
@@ -516,6 +439,7 @@ export { app, buildMarketSnapshot, getMarketSnapshot, getSectorDetail };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   app.listen(PORT, () => {
-    console.log(`Moneyboard server listening on http://localhost:${PORT}`);
+    console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
+    console.log("Provider: Naver Finance only. KIS is disabled.");
   });
 }
