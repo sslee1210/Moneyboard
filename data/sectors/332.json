@@ -1,0 +1,128 @@
+{
+  "id": "332",
+  "name": "문구류",
+  "changeRate": 0.23,
+  "weightedChangeRate": 0.22999999999999998,
+  "stockCount": 1,
+  "risingCount": 1,
+  "flatCount": 0,
+  "fallingCount": 0,
+  "tradingValueMillion": 45,
+  "volume": 34767,
+  "topStocks": [
+    {
+      "code": "005360",
+      "name": "모나미",
+      "price": 1289,
+      "changeAmount": 3,
+      "changeRate": 0.23,
+      "bid": 1287,
+      "ask": 1289,
+      "volume": 34767,
+      "tradeAmountMillion": 45,
+      "previousVolume": 47757,
+      "market": "KOSPI",
+      "direction": "up",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=005360",
+      "flow": {
+        "buyVolume": 30203,
+        "sellVolume": 22893,
+        "buyRatio": 56.88375772186228,
+        "sellRatio": 43.11624227813772,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -27,
+        "foreignNetVolume": -1006,
+        "foreignHoldingShares": 477794,
+        "foreignHoldingRate": 2.53,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:26.489Z"
+      },
+      "periodVolumes": {
+        "code": "005360",
+        "day": 34767,
+        "week": 217606,
+        "month": 1000052,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topVolumeStocks": [
+    {
+      "code": "005360",
+      "name": "모나미",
+      "price": 1289,
+      "changeAmount": 3,
+      "changeRate": 0.23,
+      "bid": 1287,
+      "ask": 1289,
+      "volume": 34767,
+      "tradeAmountMillion": 45,
+      "previousVolume": 47757,
+      "market": "KOSPI",
+      "direction": "up",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=005360",
+      "flow": {
+        "buyVolume": 30203,
+        "sellVolume": 22893,
+        "buyRatio": 56.88375772186228,
+        "sellRatio": 43.11624227813772,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -27,
+        "foreignNetVolume": -1006,
+        "foreignHoldingShares": 477794,
+        "foreignHoldingRate": 2.53,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:26.489Z"
+      }
+    }
+  ],
+  "stocks": [
+    {
+      "code": "005360",
+      "name": "모나미",
+      "price": 1289,
+      "changeAmount": 3,
+      "changeRate": 0.23,
+      "bid": 1287,
+      "ask": 1289,
+      "volume": 34767,
+      "tradeAmountMillion": 45,
+      "previousVolume": 47757,
+      "market": "KOSPI",
+      "direction": "up",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=005360",
+      "flow": {
+        "buyVolume": 30203,
+        "sellVolume": 22893,
+        "buyRatio": 56.88375772186228,
+        "sellRatio": 43.11624227813772,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -27,
+        "foreignNetVolume": -1006,
+        "foreignHoldingShares": 477794,
+        "foreignHoldingRate": 2.53,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:26.489Z"
+      },
+      "periodVolumes": {
+        "code": "005360",
+        "day": 34767,
+        "week": 217606,
+        "month": 1000052,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topStockName": "모나미",
+  "topStockCode": "005360",
+  "naverUrl": "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no=332",
+  "error": null,
+  "provider": "Naver Finance",
+  "fetchedAt": "2026-06-22T05:14:03.140Z"
+}

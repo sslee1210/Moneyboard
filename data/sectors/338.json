@@ -1,0 +1,125 @@
+{
+  "id": "338",
+  "name": "사무용전자제품",
+  "changeRate": -2.88,
+  "stockCount": 1,
+  "risingCount": 0,
+  "flatCount": 0,
+  "fallingCount": 1,
+  "naverUrl": "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no=338",
+  "tradingValueMillion": 433,
+  "volume": 10663,
+  "weightedChangeRate": -2.88,
+  "topStocks": [
+    {
+      "code": "029530",
+      "name": "신도리코",
+      "price": 40500,
+      "changeAmount": 1200,
+      "changeRate": -2.88,
+      "bid": 40500,
+      "ask": 40550,
+      "volume": 10663,
+      "tradeAmountMillion": 433,
+      "previousVolume": 13099,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029530",
+      "flow": {
+        "buyVolume": 6106,
+        "sellVolume": 5731,
+        "buyRatio": 51.5840162203261,
+        "sellRatio": 48.4159837796739,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -110,
+        "foreignNetVolume": -3650,
+        "foreignHoldingShares": 1204711,
+        "foreignHoldingRate": 12.4,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:46.746Z"
+      },
+      "periodVolumes": {
+        "code": "029530",
+        "day": 10663,
+        "week": 49887,
+        "month": 282076,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topVolumeStocks": [
+    {
+      "code": "029530",
+      "name": "신도리코",
+      "price": 40500,
+      "changeAmount": 1200,
+      "changeRate": -2.88,
+      "bid": 40500,
+      "ask": 40550,
+      "volume": 10663,
+      "tradeAmountMillion": 433,
+      "previousVolume": 13099,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029530",
+      "flow": {
+        "buyVolume": 6106,
+        "sellVolume": 5731,
+        "buyRatio": 51.5840162203261,
+        "sellRatio": 48.4159837796739,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -110,
+        "foreignNetVolume": -3650,
+        "foreignHoldingShares": 1204711,
+        "foreignHoldingRate": 12.4,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:46.746Z"
+      }
+    }
+  ],
+  "stocks": [
+    {
+      "code": "029530",
+      "name": "신도리코",
+      "price": 40500,
+      "changeAmount": 1200,
+      "changeRate": -2.88,
+      "bid": 40500,
+      "ask": 40550,
+      "volume": 10663,
+      "tradeAmountMillion": 433,
+      "previousVolume": 13099,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029530",
+      "flow": {
+        "buyVolume": 6106,
+        "sellVolume": 5731,
+        "buyRatio": 51.5840162203261,
+        "sellRatio": 48.4159837796739,
+        "bias": "buy",
+        "date": "2026.06.19",
+        "institutionNetVolume": -110,
+        "foreignNetVolume": -3650,
+        "foreignHoldingShares": 1204711,
+        "foreignHoldingRate": 12.4,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:46.746Z"
+      },
+      "periodVolumes": {
+        "code": "029530",
+        "day": 10663,
+        "week": 49887,
+        "month": 282076,
+        "date": "20260622"
+      }
+    }
+  ],
+  "provider": "Naver Finance",
+  "fetchedAt": "2026-06-22T05:13:45.556Z"
+}

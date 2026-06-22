@@ -1,0 +1,128 @@
+{
+  "id": "331",
+  "name": "복합유틸리티",
+  "changeRate": -1.58,
+  "weightedChangeRate": -1.58,
+  "stockCount": 1,
+  "risingCount": 0,
+  "flatCount": 0,
+  "fallingCount": 1,
+  "tradingValueMillion": 367,
+  "volume": 5340,
+  "topStocks": [
+    {
+      "code": "071320",
+      "name": "지역난방공사",
+      "price": 68400,
+      "changeAmount": 1100,
+      "changeRate": -1.58,
+      "bid": 68400,
+      "ask": 68500,
+      "volume": 5340,
+      "tradeAmountMillion": 367,
+      "previousVolume": 16259,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=071320",
+      "flow": {
+        "buyVolume": 3494,
+        "sellVolume": 3298,
+        "buyRatio": 51.44287396937573,
+        "sellRatio": 48.55712603062427,
+        "bias": "neutral",
+        "date": "2026.06.19",
+        "institutionNetVolume": -1668,
+        "foreignNetVolume": 66,
+        "foreignHoldingShares": 333386,
+        "foreignHoldingRate": 2.88,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:33.869Z"
+      },
+      "periodVolumes": {
+        "code": "071320",
+        "day": 5340,
+        "week": 65301,
+        "month": 346890,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topVolumeStocks": [
+    {
+      "code": "071320",
+      "name": "지역난방공사",
+      "price": 68400,
+      "changeAmount": 1100,
+      "changeRate": -1.58,
+      "bid": 68400,
+      "ask": 68500,
+      "volume": 5340,
+      "tradeAmountMillion": 367,
+      "previousVolume": 16259,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=071320",
+      "flow": {
+        "buyVolume": 3494,
+        "sellVolume": 3298,
+        "buyRatio": 51.44287396937573,
+        "sellRatio": 48.55712603062427,
+        "bias": "neutral",
+        "date": "2026.06.19",
+        "institutionNetVolume": -1668,
+        "foreignNetVolume": 66,
+        "foreignHoldingShares": 333386,
+        "foreignHoldingRate": 2.88,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:33.869Z"
+      }
+    }
+  ],
+  "stocks": [
+    {
+      "code": "071320",
+      "name": "지역난방공사",
+      "price": 68400,
+      "changeAmount": 1100,
+      "changeRate": -1.58,
+      "bid": 68400,
+      "ask": 68500,
+      "volume": 5340,
+      "tradeAmountMillion": 367,
+      "previousVolume": 16259,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=071320",
+      "flow": {
+        "buyVolume": 3494,
+        "sellVolume": 3298,
+        "buyRatio": 51.44287396937573,
+        "sellRatio": 48.55712603062427,
+        "bias": "neutral",
+        "date": "2026.06.19",
+        "institutionNetVolume": -1668,
+        "foreignNetVolume": 66,
+        "foreignHoldingShares": 333386,
+        "foreignHoldingRate": 2.88,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:33.869Z"
+      },
+      "periodVolumes": {
+        "code": "071320",
+        "day": 5340,
+        "week": 65301,
+        "month": 346890,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topStockName": "지역난방공사",
+  "topStockCode": "071320",
+  "naverUrl": "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no=331",
+  "error": null,
+  "provider": "Naver Finance",
+  "fetchedAt": "2026-06-22T05:14:03.295Z"
+}

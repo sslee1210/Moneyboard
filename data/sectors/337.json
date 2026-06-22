@@ -1,0 +1,125 @@
+{
+  "id": "337",
+  "name": "카드",
+  "changeRate": -4.44,
+  "stockCount": 1,
+  "risingCount": 0,
+  "flatCount": 0,
+  "fallingCount": 1,
+  "naverUrl": "https://finance.naver.com/sise/sise_group_detail.naver?type=upjong&no=337",
+  "tradingValueMillion": 4707,
+  "volume": 98770,
+  "weightedChangeRate": -4.44,
+  "topStocks": [
+    {
+      "code": "029780",
+      "name": "삼성카드",
+      "price": 47350,
+      "changeAmount": 2200,
+      "changeRate": -4.44,
+      "bid": 47300,
+      "ask": 47350,
+      "volume": 98770,
+      "tradeAmountMillion": 4707,
+      "previousVolume": 168166,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029780",
+      "flow": {
+        "buyVolume": 47026,
+        "sellVolume": 62477,
+        "buyRatio": 42.94494214770372,
+        "sellRatio": 57.05505785229628,
+        "bias": "sell",
+        "date": "2026.06.19",
+        "institutionNetVolume": -46263,
+        "foreignNetVolume": 39387,
+        "foreignHoldingShares": 6237524,
+        "foreignHoldingRate": 5.38,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:53.137Z"
+      },
+      "periodVolumes": {
+        "code": "029780",
+        "day": 98770,
+        "week": 1352575,
+        "month": 4973427,
+        "date": "20260622"
+      }
+    }
+  ],
+  "topVolumeStocks": [
+    {
+      "code": "029780",
+      "name": "삼성카드",
+      "price": 47350,
+      "changeAmount": 2200,
+      "changeRate": -4.44,
+      "bid": 47300,
+      "ask": 47350,
+      "volume": 98770,
+      "tradeAmountMillion": 4707,
+      "previousVolume": 168166,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029780",
+      "flow": {
+        "buyVolume": 47026,
+        "sellVolume": 62477,
+        "buyRatio": 42.94494214770372,
+        "sellRatio": 57.05505785229628,
+        "bias": "sell",
+        "date": "2026.06.19",
+        "institutionNetVolume": -46263,
+        "foreignNetVolume": 39387,
+        "foreignHoldingShares": 6237524,
+        "foreignHoldingRate": 5.38,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:53.137Z"
+      }
+    }
+  ],
+  "stocks": [
+    {
+      "code": "029780",
+      "name": "삼성카드",
+      "price": 47350,
+      "changeAmount": 2200,
+      "changeRate": -4.44,
+      "bid": 47300,
+      "ask": 47350,
+      "volume": 98770,
+      "tradeAmountMillion": 4707,
+      "previousVolume": 168166,
+      "market": "KOSPI",
+      "direction": "down",
+      "provider": "Naver Finance",
+      "naverUrl": "https://finance.naver.com/item/main.naver?code=029780",
+      "flow": {
+        "buyVolume": 47026,
+        "sellVolume": 62477,
+        "buyRatio": 42.94494214770372,
+        "sellRatio": 57.05505785229628,
+        "bias": "sell",
+        "date": "2026.06.19",
+        "institutionNetVolume": -46263,
+        "foreignNetVolume": 39387,
+        "foreignHoldingShares": 6237524,
+        "foreignHoldingRate": 5.38,
+        "source": "Naver Finance",
+        "updatedAt": "2026-06-22T05:13:53.137Z"
+      },
+      "periodVolumes": {
+        "code": "029780",
+        "day": 98770,
+        "week": 1352575,
+        "month": 4973427,
+        "date": "20260622"
+      }
+    }
+  ],
+  "provider": "Naver Finance",
+  "fetchedAt": "2026-06-22T05:13:52.380Z"
+}
