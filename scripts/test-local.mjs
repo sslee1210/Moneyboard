@@ -3,8 +3,8 @@ import { spawn } from "node:child_process";
 const port = Number(process.env.PORT || 4173);
 const baseUrl = (process.env.MONEYBOARD_BASE_URL || `http://localhost:${port}`).replace(/\/$/, "");
 const startupTimeoutMs = Number(process.env.MONEYBOARD_STARTUP_TIMEOUT_MS || 120_000);
-const serverEntry = process.env.MONEYBOARD_SERVER_ENTRY || "server-local.js";
-const acceptedModes = new Set(["localhost-live", "localhost-live-sanitized"]);
+const serverEntry = process.env.MONEYBOARD_SERVER_ENTRY || "server-practical.js";
+const acceptedModes = new Set(["localhost-live", "localhost-live-sanitized", "localhost-live-kis-api-only", "localhost-practical-kis-backfill"]);
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,8 +57,17 @@ const env = {
   ...process.env,
   PORT: String(port),
   STREAM_PUSH_MS: process.env.STREAM_PUSH_MS || "2000",
-  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "10000",
+  MARKET_CACHE_MS: process.env.MARKET_CACHE_MS || "30000",
   DETAIL_CACHE_MS: process.env.DETAIL_CACHE_MS || "30000",
+  KIS_MARKET_VERIFY_TOP_SECTORS: process.env.KIS_MARKET_VERIFY_TOP_SECTORS || "0",
+  KIS_MARKET_VERIFY_TOP_STOCKS: process.env.KIS_MARKET_VERIFY_TOP_STOCKS || "0",
+  KIS_SELECTED_SECTOR_STOCKS: process.env.KIS_SELECTED_SECTOR_STOCKS || "0",
+  KIS_NUMERIC_SOURCE: process.env.KIS_NUMERIC_SOURCE || "api-only",
+  KIS_REST_BACKFILL_ENABLED: process.env.KIS_REST_BACKFILL_ENABLED || "true",
+  KIS_REST_BACKFILL_MAX_CODES: process.env.KIS_REST_BACKFILL_MAX_CODES || "3000",
+  KIS_REST_BACKFILL_BATCH_SIZE: process.env.KIS_REST_BACKFILL_BATCH_SIZE || "2",
+  KIS_REST_BACKFILL_INTERVAL_MS: process.env.KIS_REST_BACKFILL_INTERVAL_MS || "500",
+  KIS_REALTIME_MAX_CODES: process.env.KIS_REALTIME_MAX_CODES || "40",
   MONEYBOARD_BASE_URL: baseUrl
 };
 
