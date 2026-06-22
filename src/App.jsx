@@ -29,13 +29,20 @@ const percentFormatter = new Intl.NumberFormat("ko-KR", {
 });
 
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+const appBasePath = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
 const canUseSameOriginApi =
   typeof window !== "undefined" && ["4173", "8787"].includes(window.location.port);
 const canUseApi = Boolean(configuredApiBase || canUseSameOriginApi);
 const apiFallbackPollMs = 1_000;
+const staticFallbackPollMs = 60_000;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
+}
+
+function staticDataUrl(path) {
+  const cleanPath = String(path || "").replace(/^\//, "");
+  return `${appBasePath}/data/${cleanPath}`.replace(/^\/\//, "/");
 }
 
 async function fetchJson(url) {
@@ -143,6 +150,13 @@ function sparklinePath(points, width = 180, height = 46, padding = 3) {
     .join(" ");
 }
 
+function validationMessage(snapshot, fallback = "") {
+  const validation = snapshot?.validation;
+  if (!validation) return fallback;
+  const status = validation.status === "ok" ? "검증 OK" : "검증 경고";
+  return `${status} · 오류 ${validation.errorCount || 0}`;
+}
+
 function useMarketStream() {
   const [snapshot, setSnapshot] = useState(null);
   const [streamState, setStreamState] = useState("connecting");
@@ -160,22 +174,44 @@ function useMarketStream() {
       setError(message);
     };
 
-    const poll = async () => {
+    const pollApi = async () => {
       try {
         const data = await fetchJson(apiUrl("/api/sectors"));
-        applySnapshot(data, "polling", "1초 폴링 갱신");
+        applySnapshot(data, "polling", validationMessage(data, "1초 폴링 갱신"));
       } catch (pollError) {
         if (!closed) {
           setStreamState("offline");
           setError(pollError.message);
         }
       } finally {
-        if (!closed) timer = window.setTimeout(poll, apiFallbackPollMs);
+        if (!closed) timer = window.setTimeout(pollApi, apiFallbackPollMs);
       }
     };
 
-    if (!canUseApi || !("EventSource" in window)) {
-      void poll();
+    const pollStatic = async () => {
+      try {
+        const data = await fetchJson(staticDataUrl("market.json"));
+        applySnapshot(data, "static", validationMessage(data, "정적 스냅샷 수신"));
+      } catch (staticError) {
+        if (!closed) {
+          setStreamState("offline");
+          setError(staticError.message);
+        }
+      } finally {
+        if (!closed) timer = window.setTimeout(pollStatic, staticFallbackPollMs);
+      }
+    };
+
+    if (!canUseApi) {
+      void pollStatic();
+      return () => {
+        closed = true;
+        clearTimeout(timer);
+      };
+    }
+
+    if (!("EventSource" in window)) {
+      void pollApi();
       return () => {
         closed = true;
         clearTimeout(timer);
@@ -188,7 +224,8 @@ function useMarketStream() {
     });
     stream.addEventListener("market", (event) => {
       try {
-        applySnapshot(JSON.parse(event.data), "live", "1초 스트림 갱신");
+        const data = JSON.parse(event.data);
+        applySnapshot(data, "live", validationMessage(data, "1초 스트림 갱신"));
       } catch (parseError) {
         if (!closed) setError(parseError.message);
       }
@@ -198,7 +235,7 @@ function useMarketStream() {
         setStreamState("polling");
         setError("스트림 연결 끊김 · 1초 폴링 전환");
         stream?.close();
-        void poll();
+        void pollApi();
       }
     });
 
@@ -323,7 +360,7 @@ function SectorTradingCard({ sector, selected, maxTradingValue, onSelect }) {
 
       <div className="sector-card-sub">
         <span>거래량 {formatVolume(sector.volume)}</span>
-        <span>1초 갱신</span>
+        <span>{sector.validation?.status === "ok" ? "검증 OK" : "검증 중"}</span>
       </div>
 
       <div className="top-stock-list">
@@ -389,7 +426,7 @@ function SelectedSectorPanel({ sector, detail, loading }) {
         </div>
         <div className={`sync-badge ${loading ? "loading" : "live"}`}>
           <i />
-          {loading ? "갱신 중" : "동기화"}
+          {loading ? "갱신 중" : detail?.validation?.status === "ok" ? "검증 OK" : "동기화"}
         </div>
       </div>
       <div className="selected-stats">
@@ -434,7 +471,7 @@ function SelectedStocksPanel({ sector, detail, loading }) {
         </div>
         <div className={`sync-badge ${loading ? "loading" : "live"}`}>
           <i />
-          {loading ? "상세 수집" : "상세 동기화"}
+          {loading ? "상세 수집" : detail?.validation?.status === "ok" ? "검증 OK" : "상세 동기화"}
         </div>
       </div>
 
@@ -465,7 +502,7 @@ function SelectedStocksPanel({ sector, detail, loading }) {
                 <td className={changeClass(stock.changeRate)}>{formatPercent(stock.changeRate)}</td>
                 <td>{formatTradingValue(stock.tradeAmountMillion)}</td>
                 <td>{formatVolume(stock.volume)}</td>
-                <td>{stock.market || "-"}</td>
+                <td>{stock.market || stock.tradingValueValidation?.status || "-"}</td>
               </tr>
             ))}
           </tbody>
@@ -484,7 +521,7 @@ function LoadingState({ error }) {
           Moneyboard
         </span>
         <h1>데이터 수신 대기 중</h1>
-        <p>서버가 켜져 있으면 1~5초 안에 네이버 금융 섹터 스냅샷을 수신합니다.</p>
+        <p>로컬 서버 또는 GitHub Pages 스냅샷에서 검증된 네이버 금융 섹터 데이터를 수신합니다.</p>
         {error && <code>{error}</code>}
       </section>
     </main>
@@ -544,7 +581,9 @@ export default function App() {
     async function loadDetail() {
       setDetailLoading(true);
       try {
-        const data = await fetchJson(apiUrl(`/api/sectors/${selectedSector.id}`));
+        const data = await fetchJson(
+          canUseApi ? apiUrl(`/api/sectors/${selectedSector.id}`) : staticDataUrl(`sectors/${selectedSector.id}.json`),
+        );
         if (!cancelled) setSectorDetail(data);
       } catch {
         if (!cancelled) setSectorDetail(selectedSector);
@@ -564,14 +603,14 @@ export default function App() {
   }
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
-  const updatedTime = formatTime(snapshot?.updatedAt);
+  const updatedTime = formatTime(snapshot?.updatedAt || snapshot?.generatedAt);
   const streamLabel =
     streamState === "live"
       ? "LIVE"
       : streamState === "polling"
         ? "POLLING"
         : streamState === "static"
-          ? "SNAPSHOT"
+          ? "STATIC"
           : "OFFLINE";
 
   return (
@@ -619,7 +658,7 @@ export default function App() {
           icon={Clock3}
           label="최근 수신"
           value={updatedTime}
-          detail={error || `${Math.round((snapshot?.refreshMs || 1000) / 1000)}초 자동 갱신`}
+          detail={error || validationMessage(snapshot, `${Math.round((snapshot?.refreshMs || 1000) / 1000)}초 자동 갱신`)}
         />
       </section>
 
@@ -671,8 +710,8 @@ export default function App() {
       />
 
       <footer>
-        섹터/종목 데이터는 네이버 금융 업종별 시세를 기반으로 로컬 서버에서 1초 단위로 자동 동기화합니다.
-        최상단 지수/환율은 Yahoo Finance 차트 데이터이며 지연 또는 보정 표시가 있을 수 있습니다. KIS API는 사용하지 않습니다.
+        섹터/종목 데이터는 네이버 금융 업종별 시세를 기반으로 수집하며, 거래대금 컬럼은 현재가×거래량 검증 후 표시합니다.
+        로컬 서버는 1초 단위 라이브 동기화, GitHub Pages는 Actions가 생성한 검증 스냅샷을 사용합니다.
       </footer>
     </main>
   );
