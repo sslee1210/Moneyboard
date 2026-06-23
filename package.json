@@ -19,6 +19,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "cheerio": "^1.1.2",
+    "dotenv": "^16.4.7",
     "express": "^5.1.0",
     "iconv-lite": "^0.7.2",
     "lucide-react": "^0.468.0",
