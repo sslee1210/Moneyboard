@@ -4,24 +4,28 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 0.0.0.0",
-    "server": "node server.js",
+    "dev": "node scripts/apply-fast-naver-settings.mjs && vite --host 0.0.0.0",
+    "server": "node scripts/apply-fast-naver-settings.mjs && node server.js",
+    "server:slow": "node server.js",
     "snapshot": "node scripts/generate-static-data.mjs",
-    "build": "vite build",
-    "build:static": "npm run snapshot && vite build",
-    "build:pages": "npm run snapshot && vite build",
+    "build": "node scripts/apply-fast-naver-settings.mjs && vite build",
+    "build:static": "npm run snapshot && npm run build",
+    "build:pages": "npm run snapshot && npm run build",
     "preview": "vite preview --host 0.0.0.0 --port 4173",
     "start": "npm run build && node server.js"
   },
   "dependencies": {
-    "@vitejs/plugin-react": "^6.0.2",
-    "cheerio": "^1.1.2",
-    "express": "^5.1.0",
-    "iconv-lite": "^0.7.2",
-    "lucide-react": "^0.468.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "recharts": "^3.3.0",
-    "vite": "^8.0.16"
+    "@vitejs/plugin-react": "4.3.4",
+    "cheerio": "1.0.0",
+    "express": "5.1.0",
+    "iconv-lite": "0.7.2",
+    "lucide-react": "0.468.0",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "recharts": "3.3.0",
+    "vite": "5.4.19"
+  },
+  "engines": {
+    "node": ">=18.18.0"
   }
 }
