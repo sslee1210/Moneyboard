@@ -3,6 +3,7 @@ import * as cheerio from "cheerio";
 import iconv from "iconv-lite";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { buildMarketOverview, OVERVIEW_CACHE_MS } from "./server-overview.js";
 
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
@@ -87,7 +88,7 @@ async function fetchHtml(pathname) {
     }
 
     const utf8Text = buffer.toString("utf8");
-    return utf8Text.includes("�") ? iconv.decode(buffer, "euc-kr") : utf8Text;
+    return utf8Text.includes(String.fromCharCode(65533)) ? iconv.decode(buffer, "euc-kr") : utf8Text;
   } finally {
     clearTimeout(timeout);
   }
@@ -262,7 +263,10 @@ function summarizeSector(detail) {
 async function buildMarketSnapshot() {
   const sectorHtml = await fetchHtml("/sise/sise_group.naver?type=upjong");
   const sectors = parseSectorList(sectorHtml);
-  const details = await mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => getSectorDetail(sector));
+  const [details, overview] = await Promise.all([
+    mapLimit(sectors, DETAIL_CONCURRENCY, (sector) => getSectorDetail(sector)),
+    buildMarketOverview()
+  ]);
   const summaries = details.map(summarizeSector).sort((a, b) => b.tradingValueMillion - a.tradingValueMillion);
   const totalTradingValueMillion = summaries.reduce((sum, sector) => sum + sector.tradingValueMillion, 0);
   const totalVolume = summaries.reduce((sum, sector) => sum + sector.volume, 0);
@@ -279,11 +283,15 @@ async function buildMarketSnapshot() {
   return {
     updatedAt: new Date().toISOString(),
     mode: "localhost-live",
+    provider: "Naver Finance",
+    overviewProvider: "Yahoo Finance",
+    overviewCacheMs: OVERVIEW_CACHE_MS,
     source: {
       name: "Naver Finance",
       url: `${NAVER_BASE_URL}/sise/sise_group.naver?type=upjong`,
       tradingValueUnit: "millionKRW"
     },
+    overview,
     totals: {
       sectorCount: summaries.length,
       tradingValueMillion: totalTradingValueMillion,
@@ -361,13 +369,14 @@ app.use((request, response, next) => {
 app.use(express.json({ limit: "2mb" }));
 
 app.get("/api/health", (_, response) => {
-  response.json({ ok: true, mode: "localhost-live", provider: "Naver Finance", now: new Date().toISOString() });
+  response.json({ ok: true, mode: "localhost-live", provider: "Naver Finance", overviewProvider: "Yahoo Finance", now: new Date().toISOString() });
 });
 
 app.get("/api/provider", (_, response) => {
   response.json({
     market: "Naver Finance",
     sectorDetail: "Naver Finance",
+    overviewProvider: "Yahoo Finance",
     volumeProfile: "Naver Finance day-volume only",
     kis: { configured: false, enabled: false }
   });
@@ -435,11 +444,11 @@ app.use((request, response, next) => {
   response.sendFile(path.join(__dirname, "dist", "index.html"));
 });
 
-export { app, buildMarketSnapshot, getMarketSnapshot, getSectorDetail };
+export { app, buildMarketSnapshot, getMarketSnapshot, getSectorDetail, buildMarketOverview };
 
 if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   app.listen(PORT, () => {
     console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
-    console.log("Provider: Naver Finance only. KIS is disabled.");
+    console.log("Provider: Naver Finance + Yahoo Finance overview. KIS is disabled.");
   });
 }
