@@ -62,6 +62,23 @@ function applyCors(request, response, next) {
   next();
 }
 
+function buildProviderStatus() {
+  const adapter = getPrecisionWatchAdapterStatus();
+  return {
+    market: "Naver Finance broad scan",
+    sectorDetail: "Naver Finance",
+    overviewProvider: "Yahoo Finance",
+    volumeProfile: "Naver Finance day-volume only",
+    precisionWatch: {
+      broadScan: "Naver Finance all-sector scan",
+      selectedUniverse: "top-ranked candidates only",
+      endpoint: "/api/precision-watchlist",
+      adapter
+    },
+    kis: adapter.kis
+  };
+}
+
 async function main() {
   const app = express();
   app.use(applyCors);
@@ -79,18 +96,17 @@ async function main() {
   });
 
   app.get("/api/provider", (_, response) => {
+    response.json(buildProviderStatus());
+  });
+
+  app.get("/api/kis/status", (_, response) => {
+    const status = buildProviderStatus().kis;
     response.json({
-      market: "Naver Finance broad scan",
-      sectorDetail: "Naver Finance",
-      overviewProvider: "Yahoo Finance",
-      volumeProfile: "Naver Finance day-volume only",
-      precisionWatch: {
-        broadScan: "Naver Finance all-sector scan",
-        selectedUniverse: "top-ranked candidates only",
-        endpoint: "/api/precision-watchlist",
-        adapter: getPrecisionWatchAdapterStatus()
-      },
-      kis: { configured: false, enabled: false }
+      ...status,
+      source: "local-env",
+      note: status?.enabled
+        ? "KIS environment is configured and enabled. Token issuance is handled in the next local adapter step."
+        : "Check KIS_ENABLED, KIS_APP_KEY, KIS_APP_SEC, and KIS_ACCOUNT_NO in .env."
     });
   });
 
