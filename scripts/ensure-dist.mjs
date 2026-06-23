@@ -8,6 +8,7 @@ const rootDir = path.resolve(__dirname, "..");
 const distIndex = path.join(rootDir, "dist", "index.html");
 const packageJson = path.join(rootDir, "package.json");
 const srcDir = path.join(rootDir, "src");
+const publicDir = path.join(rootDir, "public");
 const publicIndex = path.join(rootDir, "index.html");
 
 function newestMtime(targetPath) {
@@ -29,8 +30,8 @@ function newestMtime(targetPath) {
 function shouldBuild() {
   if (!existsSync(distIndex)) return "dist/index.html missing";
   const distTime = newestMtime(distIndex);
-  const sourceTime = Math.max(newestMtime(packageJson), newestMtime(srcDir), newestMtime(publicIndex));
-  if (sourceTime > distTime) return "frontend source changed after last build";
+  const sourceTime = Math.max(newestMtime(packageJson), newestMtime(srcDir), newestMtime(publicDir), newestMtime(publicIndex));
+  if (sourceTime > distTime) return "frontend source or public asset changed after last build";
   return "";
 }
 
