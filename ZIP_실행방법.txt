@@ -1,0 +1,25 @@
+Moneyboard ZIP 실행 방법
+
+1. GitHub에서 naver-yahoo-baseline 브랜치를 선택합니다.
+2. Code 버튼을 누르고 Download ZIP을 클릭합니다.
+3. 다운로드한 ZIP 파일을 원하는 위치에 압축 해제합니다.
+4. 압축 해제한 폴더 안에서 처음설치.bat을 더블클릭합니다.
+   - 최초 1회만 실행합니다.
+   - Node.js가 설치되어 있지 않으면 Node.js 18 이상 LTS를 먼저 설치해야 합니다.
+5. 설치가 끝나면 실행.bat을 더블클릭합니다.
+6. 브라우저에서 http://localhost:4173 을 엽니다.
+
+확인 주소
+- 서버 상태: http://localhost:4173/api/health
+- 데이터 확인: http://localhost:4173/api/sectors
+- 제공자 확인: http://localhost:4173/api/provider
+
+정상 화면
+- 상단에 코스피, 코스닥, 나스닥100 선물, 달러 환율, S&P500 카드가 표시됩니다.
+- 가운데에는 섹터별 종목 카드가 표시됩니다.
+- 오른쪽에는 1분봉 또는 3분봉 기준 거래대금 10억 이상 유입 알림이 리스트로 표시됩니다.
+
+주의사항
+- ZIP을 다시 다운로드하면 기존 폴더에 덮어쓰기보다 새 폴더에 압축 해제하는 것이 안전합니다.
+- 실행 중인 서버 창이 있으면 Ctrl + C로 종료한 뒤 새 폴더에서 실행.bat을 다시 실행하세요.
+- npm run server 실행 시 scripts/ensure-dist.mjs가 dist/index.html을 확인하고, 없으면 자동으로 빌드합니다.
