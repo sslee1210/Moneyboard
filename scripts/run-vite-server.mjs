@@ -1,6 +1,8 @@
 import express from "express";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { createServer as createViteServer } from "vite";
-import { buildVolumeProfile, getMarketSnapshot, getSectorDetail } from "../server.js";
+import { getMarketSnapshot, getSectorDetail } from "../server.js";
 import { buildPrecisionWatchlist, getPrecisionWatchAdapterStatus } from "../server-precision-watch.js";
 
 const PORT = Number(process.env.PORT || 4173);
@@ -12,6 +14,34 @@ function withPrecisionWatchlist(snapshot) {
   return {
     ...snapshot,
     precisionWatchlist
+  };
+}
+
+function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
+  const items = (stocks || []).slice(0, limit).map((stock) => ({
+    code: stock.code,
+    name: stock.name,
+    day: stock.volume || 0,
+    week: stock.periodVolumes?.week ?? null,
+    month: stock.periodVolumes?.month ?? null
+  }));
+
+  return {
+    sampleSize: items.length,
+    limit,
+    provider: "Naver Finance",
+    byCode: Object.fromEntries(items.map((item) => [item.code, item])),
+    counts: {
+      day: items.filter((item) => item.day !== null && item.day !== undefined).length,
+      week: items.filter((item) => item.week !== null && item.week !== undefined).length,
+      month: items.filter((item) => item.month !== null && item.month !== undefined).length
+    },
+    totals: {
+      day: items.reduce((sum, item) => sum + (item.day || 0), 0),
+      week: items.reduce((sum, item) => sum + (item.week || 0), 0),
+      month: items.reduce((sum, item) => sum + (item.month || 0), 0)
+    },
+    updatedAt: new Date().toISOString()
   };
 }
 
@@ -144,7 +174,9 @@ async function main() {
     }
 
     try {
-      const template = await vite.transformIndexHtml(request.originalUrl, await vite.ssrLoadModule("/index.html?raw").then((module) => module.default));
+      const htmlPath = path.resolve(process.cwd(), "index.html");
+      const source = await fs.readFile(htmlPath, "utf8");
+      const template = await vite.transformIndexHtml(request.originalUrl, source);
       response.status(200).set({ "Content-Type": "text/html" }).end(template);
     } catch (error) {
       vite.ssrFixStacktrace(error);
