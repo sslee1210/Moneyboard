@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/apply-fast-naver-settings.mjs && node scripts/apply-card-ui.mjs && vite --host 0.0.0.0",
-    "server": "node scripts/apply-fast-naver-settings.mjs && node scripts/apply-card-ui.mjs && node server.js",
+    "server": "node scripts/apply-fast-naver-settings.mjs && node scripts/apply-card-ui.mjs && vite build && node server.js",
     "server:slow": "node server.js",
     "snapshot": "node scripts/generate-static-data.mjs",
     "build": "node scripts/apply-fast-naver-settings.mjs && node scripts/apply-card-ui.mjs && vite build",
