@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "server": "node scripts/run-practical-server.mjs",
+    "server": "node scripts/ensure-dist.mjs && node scripts/run-practical-server.mjs",
     "server:build": "vite build && node scripts/run-practical-server.mjs",
     "server:raw": "node server.js",
     "server:sanitized": "node server-local.js",
