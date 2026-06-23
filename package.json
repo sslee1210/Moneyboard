@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "server": "node scripts/ensure-dist.mjs && node scripts/run-practical-server.mjs",
-    "server:build": "vite build && node scripts/run-practical-server.mjs",
+    "server": "node scripts/run-vite-server.mjs",
+    "server:static": "node scripts/ensure-dist.mjs && node scripts/run-practical-server.mjs",
+    "server:build": "vite build && node server.js",
     "server:raw": "node server.js",
     "snapshot": "node scripts/generate-static-data.mjs",
     "build": "vite build",
