@@ -1,15 +1,4 @@
-import {
-  Activity,
-  ArrowDownRight,
-  ArrowUpRight,
-  BarChart3,
-  Clock3,
-  Database,
-  LineChart,
-  Radio,
-  Search,
-  TrendingUp
-} from "lucide-react";
+import { Activity, BarChart3, Clock3, Database, LineChart, Radio, Search, TrendingUp } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   Bar,
@@ -146,11 +135,11 @@ function formatTradingValue(millionWon = 0) {
   if (millionWon >= 100) {
     return `${percentFormatter.format(millionWon / 100)}억`;
   }
-  return `${currencyFormatter.format(Math.round(millionWon))}백만`;
+  return `${currencyFormatter.format(Math.round(millionWon || 0))}백만`;
 }
 
 function formatNumber(value = 0) {
-  return currencyFormatter.format(Math.round(value));
+  return currencyFormatter.format(Math.round(value || 0));
 }
 
 function formatVolume(value) {
@@ -166,8 +155,9 @@ function formatVolume(value) {
 }
 
 function formatPercent(value = 0) {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${percentFormatter.format(value)}%`;
+  const number = Number.isFinite(value) ? value : 0;
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${percentFormatter.format(number)}%`;
 }
 
 function changeClass(value = 0) {
@@ -176,7 +166,7 @@ function changeClass(value = 0) {
   return "neutral";
 }
 
-function shortName(name) {
+function shortName(name = "") {
   return name.length > 8 ? `${name.slice(0, 8)}...` : name;
 }
 
@@ -342,22 +332,56 @@ function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
   );
 }
 
-function SectorRow({ sector, selected, maxValue, onSelect }) {
-  const width = maxValue ? Math.max(4, (sector.tradingValueMillion / maxValue) * 100) : 0;
+function SectorCard({ sector, selected, maxValue, onSelect }) {
+  const tradingValue = sector.tradingValueMillion || 0;
+  const width = maxValue ? Math.max(4, (tradingValue / maxValue) * 100) : 0;
+  const topStocks = (sector.topStocks || []).slice(0, 5);
+  const sectorChange = sector.weightedChangeRate ?? sector.changeRate ?? 0;
+
+  const handleKeyDown = (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      onSelect(sector);
+    }
+  };
 
   return (
-    <button className={`sector-row ${selected ? "is-selected" : ""}`} onClick={() => onSelect(sector)}>
-      <span className="sector-rank">{sector.rank}</span>
-      <span className="sector-main">
-        <strong>{sector.name}</strong>
-        <span>{sector.stockCount}종목 · {sector.topStockName || "집계 중"}</span>
-        <i style={{ width: `${width}%` }} />
-      </span>
-      <span className="sector-money">{formatTradingValue(sector.tradingValueMillion)}</span>
-      <span className={`sector-change ${changeClass(sector.weightedChangeRate || sector.changeRate)}`}>
-        {formatPercent(sector.weightedChangeRate || sector.changeRate)}
-      </span>
-    </button>
+    <article
+      className={`sector-card-block ${selected ? "is-selected" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelect(sector)}
+      onKeyDown={handleKeyDown}
+    >
+      <div className="sector-card-head">
+        <span className="sector-rank">{sector.rank}</span>
+        <div className="sector-title-wrap">
+          <strong>{sector.name}</strong>
+          <small>{sector.stockCount}종목 · {sector.topStockName || topStocks[0]?.name || "집계 중"}</small>
+        </div>
+        <div className="sector-card-values">
+          <strong>{formatTradingValue(sector.tradingValueMillion)}</strong>
+          <span className={changeClass(sectorChange)}>{formatPercent(sectorChange)}</span>
+        </div>
+      </div>
+      <i className="sector-card-bar" style={{ width: `${width}%` }} />
+      <ol className="sector-stock-list" aria-label={`${sector.name} 상위 종목`}>
+        {topStocks.length ? (
+          topStocks.map((stock, index) => (
+            <li key={stock.code || `${sector.id}-${stock.name}-${index}`}>
+              <span className="stock-chip-rank">{index + 1}</span>
+              <span className="stock-chip-name">{stock.name}</span>
+              <span className={`stock-chip-change ${changeClass(stock.changeRate)}`}>{formatPercent(stock.changeRate)}</span>
+              <span className="stock-chip-money">{formatTradingValue(stock.tradeAmountMillion)}</span>
+            </li>
+          ))
+        ) : (
+          <li className="is-empty">
+            <span>종목 상세 수집 중</span>
+          </li>
+        )}
+      </ol>
+    </article>
   );
 }
 
@@ -463,7 +487,7 @@ function SectorDetail({
     .map((stock) => ({
       name: shortName(stock.name),
       거래량: stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0,
-      등락률: Number(stock.changeRate.toFixed(2))
+      등락률: Number((stock.changeRate || 0).toFixed(2))
     }))
     .filter((stock) => stock.거래량 > 0)
     .sort((left, right) => right.거래량 - left.거래량)
@@ -574,7 +598,7 @@ export default function App() {
   }, [sectorDetail?.stocks]);
   const topChartData = rankedSectors.slice(0, 12).map((sector) => ({
     name: shortName(sector.name),
-    거래대금: Math.round(sector.tradingValueMillion),
+    거래대금: Math.round(sector.tradingValueMillion || 0),
     등락률: Number((sector.weightedChangeRate || sector.changeRate || 0).toFixed(2))
   }));
 
@@ -658,7 +682,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [volumeProfileKey]);
+  }, [volumeProfileKey, sectorDetail?.stocks]);
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
   const updatedTime = snapshot?.updatedAt
@@ -719,20 +743,20 @@ export default function App() {
       </section>
 
       <section className="workspace">
-        <aside className="sector-panel">
-          <div className="panel-header">
+        <section className="sector-panel">
+          <div className="panel-header sector-panel-header">
             <div>
               <span className="eyebrow">거래대금 랭킹</span>
-              <h2>섹터</h2>
+              <h2>섹터별 상위 종목</h2>
             </div>
             <div className="search-box">
               <Search size={16} />
               <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
             </div>
           </div>
-          <div className="sector-list">
+          <div className="sector-grid">
             {filteredSectors.map((sector) => (
-              <SectorRow
+              <SectorCard
                 key={sector.id}
                 sector={sector}
                 selected={sector.id === selectedSector?.id}
@@ -743,8 +767,9 @@ export default function App() {
                 }}
               />
             ))}
+            {!filteredSectors.length && <div className="empty-sector-card">검색된 섹터가 없습니다.</div>}
           </div>
-        </aside>
+        </section>
 
         <section className="analysis-panel">
           <div className="chart-card">
@@ -753,11 +778,7 @@ export default function App() {
               <span>상위 섹터 거래대금</span>
             </div>
             <ResponsiveContainer width="100%" height={320}>
-              <BarChart
-                data={topChartData}
-                layout="vertical"
-                margin={{ top: 8, right: 14, bottom: 0, left: 8 }}
-              >
+              <BarChart data={topChartData} layout="vertical" margin={{ top: 8, right: 14, bottom: 0, left: 8 }}>
                 <CartesianGrid stroke="#e7e9ef" vertical={false} />
                 <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={formatTradingValue} />
                 <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={118} />
@@ -769,24 +790,6 @@ export default function App() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          </div>
-
-          <div className="insight-strip">
-            {rankedSectors.slice(0, 3).map((sector) => (
-              <article key={sector.id}>
-                <span>{sector.rank}</span>
-                <strong>{sector.name}</strong>
-                <small>{formatTradingValue(sector.tradingValueMillion)}</small>
-                <em className={changeClass(sector.weightedChangeRate || sector.changeRate)}>
-                  {(sector.weightedChangeRate || sector.changeRate) >= 0 ? (
-                    <ArrowUpRight size={15} />
-                  ) : (
-                    <ArrowDownRight size={15} />
-                  )}
-                  {formatPercent(sector.weightedChangeRate || sector.changeRate)}
-                </em>
-              </article>
-            ))}
           </div>
 
           <SectorDetail
