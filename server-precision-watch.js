@@ -2,6 +2,29 @@ const DEFAULT_WATCH_LIMIT = Number(process.env.PRECISION_WATCH_LIMIT || 40);
 const DEFAULT_SOURCE_TOP_SECTORS = Number(process.env.PRECISION_SOURCE_TOP_SECTORS || 12);
 const DEFAULT_MIN_TRADE_AMOUNT_MILLION = Number(process.env.PRECISION_MIN_TRADE_AMOUNT_MILLION || 0);
 
+const EXCLUDED_PRODUCT_KEYWORDS = [
+  "ETF",
+  "ETN",
+  "ELW",
+  "KODEX",
+  "TIGER",
+  "ACE",
+  "RISE",
+  "SOL",
+  "HANARO",
+  "KBSTAR",
+  "ARIRANG",
+  "KOSEF",
+  "TIMEFOLIO",
+  "PLUS",
+  "레버리지",
+  "인버스",
+  "선물",
+  "TR",
+  "커버드콜",
+  "액티브"
+];
+
 function safeNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
@@ -11,6 +34,21 @@ function normalizeTradeAmount(value) {
   const tradeAmount = safeNumber(value);
   if (tradeAmount <= 0) return 0;
   return Math.log10(tradeAmount + 10) * 22;
+}
+
+function normalizeName(value) {
+  return String(value || "").replace(/\s+/g, " ").trim().toUpperCase();
+}
+
+function isExchangeTradedProduct(stock) {
+  const code = String(stock?.code || "").trim();
+  const name = normalizeName(stock?.name);
+
+  // KRX common/preferred stocks use six numeric digits. Naver also exposes ETF/ETN-like
+  // products with alphanumeric codes such as 0193T0, which should never enter the watchlist.
+  if (!/^\d{6}$/.test(code)) return true;
+
+  return EXCLUDED_PRODUCT_KEYWORDS.some((keyword) => name.includes(keyword.toUpperCase()));
 }
 
 function buildReasonTags(stock, sector, sectorRank) {
@@ -47,11 +85,17 @@ export function buildPrecisionWatchlist(snapshot, options = {}) {
   const sourceTopSectors = Math.max(1, Number(options.sourceTopSectors || DEFAULT_SOURCE_TOP_SECTORS));
   const minTradeAmountMillion = Math.max(0, Number(options.minTradeAmountMillion ?? DEFAULT_MIN_TRADE_AMOUNT_MILLION));
   const byCode = new Map();
+  let excludedProductCount = 0;
 
   (snapshot?.sectors || []).slice(0, sourceTopSectors).forEach((sector, sectorIndex) => {
     const sectorRank = sectorIndex + 1;
     (sector.topStocks || []).forEach((stock, stockIndex) => {
       if (!stock?.code || !stock?.name) return;
+      if (isExchangeTradedProduct(stock)) {
+        excludedProductCount += 1;
+        return;
+      }
+
       const tradeAmountMillion = safeNumber(stock.tradeAmountMillion);
       if (tradeAmountMillion < minTradeAmountMillion) return;
 
@@ -99,6 +143,12 @@ export function buildPrecisionWatchlist(snapshot, options = {}) {
     watchLimit,
     sourceTopSectors,
     minTradeAmountMillion,
+    excludedProductCount,
+    exclusionPolicy: {
+      enabled: true,
+      codeRule: "exclude non-6-digit numeric codes",
+      keywords: EXCLUDED_PRODUCT_KEYWORDS
+    },
     selectedCount: candidates.length,
     candidates,
     adapter: getPrecisionWatchAdapterStatus()
