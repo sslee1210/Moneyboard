@@ -84,6 +84,10 @@ function boolEnv(name, fallback = false) {
   return ["1", "true", "yes", "on"].includes(value);
 }
 
+function normalizedProvider() {
+  return String(process.env.PRECISION_API_PROVIDER || "kiwoom").trim().toLowerCase();
+}
+
 function getKisEnvStatus() {
   const hasKey = Boolean(String(process.env.KIS_APP_KEY || "").trim());
   const hasPin = Boolean(String(process.env.KIS_APP_SEC || "").trim());
@@ -101,6 +105,34 @@ function getKisEnvStatus() {
     restBaseUrl: process.env.KIS_REST_BASE_URL || process.env.KIS_BASE_URL || "not-configured",
     websocket: process.env.KIS_WS_URL || process.env.KIS_WEBSOCKET_URL ? "configured" : "not-configured",
     approvalKey: process.env.KIS_APPROVAL_KEY ? "configured" : "not-configured"
+  };
+}
+
+export function getKiwoomEnvStatus() {
+  const bridgeUrl = String(process.env.KIWOOM_BRIDGE_URL || "").trim();
+  const tokenConfigured = Boolean(String(process.env.KIWOOM_BRIDGE_TOKEN || "").trim());
+  const accountConfigured = Boolean(String(process.env.KIWOOM_ACCOUNT_NO || "").trim());
+  const requestedEnabled = boolEnv("KIWOOM_ENABLED", false);
+  const configured = Boolean(bridgeUrl);
+  const enabled = requestedEnabled && configured;
+
+  return {
+    configured,
+    enabled,
+    requestedEnabled,
+    mode: String(process.env.KIWOOM_MODE || "real").trim().toLowerCase(),
+    bridgeUrl: bridgeUrl || "not-configured",
+    tokenConfigured,
+    accountConfigured,
+    watchLimit: Number(process.env.KIWOOM_WATCH_LIMIT || process.env.PRECISION_WATCH_LIMIT || 40),
+    screenNo: process.env.KIWOOM_SCREEN_NO || "9000",
+    realFids: process.env.KIWOOM_REAL_FIDS || "10;13;14;15;20;228",
+    healthPath: process.env.KIWOOM_HEALTH_PATH || "/health",
+    streamPath: process.env.KIWOOM_STREAM_PATH || "/stream",
+    registerPath: process.env.KIWOOM_REGISTER_PATH || "/register",
+    note: enabled
+      ? "Kiwoom local bridge is configured for selected precision-watch candidates."
+      : "Set KIWOOM_ENABLED=true and KIWOOM_BRIDGE_URL in .env after starting the local Kiwoom bridge."
   };
 }
 
@@ -162,7 +194,7 @@ export function buildPrecisionWatchlist(snapshot, options = {}) {
     sourceUpdatedAt: snapshot?.updatedAt || null,
     mode: "broad-scan-selected-watchlist",
     broadScanProvider: snapshot?.provider || "Naver Finance",
-    precisionProvider: "broker-api-adapter-pending",
+    precisionProvider: `${normalizedProvider()}-adapter-pending`,
     marketScope: "KRX broad scan; NXT can be attached only through a broker/NXT market adapter",
     watchLimit,
     sourceTopSectors,
@@ -181,10 +213,14 @@ export function buildPrecisionWatchlist(snapshot, options = {}) {
 
 export function getPrecisionWatchAdapterStatus() {
   const kis = getKisEnvStatus();
-  const provider = process.env.PRECISION_API_PROVIDER || (kis.configured ? "kis" : "none");
+  const kiwoom = getKiwoomEnvStatus();
+  const provider = normalizedProvider();
   const requestedEnabled = process.env.PRECISION_API_ENABLED === "true";
-  const enabled = requestedEnabled && provider === "kis" && kis.enabled;
   const market = process.env.PRECISION_MARKET_SCOPE || "KRX_SELECTED";
+  const enabled = requestedEnabled && (
+    (provider === "kiwoom" && kiwoom.enabled) ||
+    (provider === "kis" && kis.enabled)
+  );
 
   return {
     enabled,
@@ -193,9 +229,10 @@ export function getPrecisionWatchAdapterStatus() {
     market,
     websocket: enabled ? "selected-watchlist-ready" : "not-configured",
     restPolling: enabled ? "fallback-ready" : "not-configured",
+    kiwoom,
     kis,
     note: enabled
-      ? "KIS mock/prod adapter is enabled for selected precision-watch candidates only."
-      : "Set KIS_ENABLED=true, PRECISION_API_ENABLED=true, KIS_APP_KEY, KIS_APP_SEC, and KIS_ACCOUNT_NO in .env."
+      ? `${provider.toUpperCase()} adapter is enabled for selected precision-watch candidates only.`
+      : "Set PRECISION_API_ENABLED=true and configure the selected broker adapter in .env."
   };
 }
