@@ -1,8 +1,11 @@
 (() => {
-  const STORAGE_KEY = "moneyboard.flowAlertSummary.v1";
+  const STORAGE_KEY = "moneyboard.flowAlertSummary.v2";
   const SUMMARY_CLASS = "flow-alert-summary";
-  const MAX_SEEN_KEYS = 1000;
+  const MAX_SEEN_KEYS = 800;
   const MAX_SUMMARY_ITEMS = 8;
+  const RENDER_INTERVAL_MS = 3000;
+
+  let lastRenderSignature = "";
 
   function loadState() {
     try {
@@ -18,14 +21,25 @@
 
   function saveState(state) {
     try {
-      const compactState = {
-        seen: state.seen.slice(-MAX_SEEN_KEYS),
-        items: state.items
-      };
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(compactState));
+      sessionStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          seen: state.seen.slice(-MAX_SEEN_KEYS),
+          items: state.items
+        })
+      );
     } catch {
-      // Summary persistence is optional. The live panel must continue even when storage is unavailable.
+      // Session persistence is optional. Rendering must continue when storage is blocked.
     }
+  }
+
+  function escapeHtml(value = "") {
+    return String(value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
   }
 
   function text(parent, selector) {
@@ -63,8 +77,6 @@
 
   function scanAlerts() {
     const alertElements = [...document.querySelectorAll(".flow-alert-panel .flow-alert-item")];
-    if (!alertElements.length) return loadState();
-
     const state = loadState();
     const seenSet = new Set(state.seen);
     let changed = false;
@@ -128,6 +140,48 @@
     return summary;
   }
 
+  function buildSummaryHtml(items) {
+    if (!items.length) {
+      return `
+        <div class="flow-summary-head">
+          <strong>종목별 감지 횟수</strong>
+          <span>현재 세션</span>
+        </div>
+        <div class="flow-summary-empty">아직 취합된 종목이 없습니다.</div>
+      `;
+    }
+
+    return `
+      <div class="flow-summary-head">
+        <strong>종목별 감지 횟수</strong>
+        <span>현재 세션 · ${items.length}종목</span>
+      </div>
+      <ol class="flow-summary-list">
+        ${items
+          .map(
+            (item, index) => `
+              <li>
+                <a href="${escapeHtml(item.href)}" target="_blank" rel="noreferrer">
+                  <span class="flow-summary-rank">${index + 1}</span>
+                  <span class="flow-summary-main">
+                    <strong>${escapeHtml(item.name)}</strong>
+                    <em>${escapeHtml(item.code)}${item.market ? ` · ${escapeHtml(item.market)}` : ""}</em>
+                    <small>${escapeHtml(item.lastSector || "섹터 확인 중")}</small>
+                  </span>
+                  <span class="flow-summary-count">
+                    <b>${item.count}회</b>
+                    <small>1분 ${item.oneMinuteCount} · 3분 ${item.threeMinuteCount}</small>
+                    <em>${escapeHtml(item.lastMoney || "최근 유입")} · ${escapeHtml(item.lastTriggeredTime || "--:--")}</em>
+                  </span>
+                </a>
+              </li>
+            `
+          )
+          .join("")}
+      </ol>
+    `;
+  }
+
   function renderSummary() {
     const panel = document.querySelector(".flow-alert-panel");
     if (!panel) return;
@@ -140,48 +194,21 @@
       })
       .slice(0, MAX_SUMMARY_ITEMS);
 
-    const summary = createSummaryShell(panel);
+    const signature = JSON.stringify(
+      items.map((item) => [
+        item.code,
+        item.count,
+        item.oneMinuteCount,
+        item.threeMinuteCount,
+        item.lastMoney,
+        item.lastTriggeredTime
+      ])
+    );
 
-    if (!items.length) {
-      summary.innerHTML = `
-        <div class="flow-summary-head">
-          <strong>종목별 감지 횟수</strong>
-          <span>현재 세션</span>
-        </div>
-        <div class="flow-summary-empty">아직 취합된 종목이 없습니다.</div>
-      `;
-      return;
-    }
+    if (signature === lastRenderSignature) return;
+    lastRenderSignature = signature;
 
-    summary.innerHTML = `
-      <div class="flow-summary-head">
-        <strong>종목별 감지 횟수</strong>
-        <span>현재 세션 · ${items.length}종목</span>
-      </div>
-      <ol class="flow-summary-list">
-        ${items
-          .map(
-            (item, index) => `
-              <li>
-                <a href="${item.href}" target="_blank" rel="noreferrer">
-                  <span class="flow-summary-rank">${index + 1}</span>
-                  <span class="flow-summary-main">
-                    <strong>${item.name}</strong>
-                    <em>${item.code}${item.market ? ` · ${item.market}` : ""}</em>
-                    <small>${item.lastSector || "섹터 확인 중"}</small>
-                  </span>
-                  <span class="flow-summary-count">
-                    <b>${item.count}회</b>
-                    <small>1분 ${item.oneMinuteCount} · 3분 ${item.threeMinuteCount}</small>
-                    <em>${item.lastMoney || "최근 유입"} · ${item.lastTriggeredTime || "--:--"}</em>
-                  </span>
-                </a>
-              </li>
-            `
-          )
-          .join("")}
-      </ol>
-    `;
+    createSummaryShell(panel).innerHTML = buildSummaryHtml(items);
   }
 
   function injectStyle() {
@@ -296,14 +323,7 @@
   function start() {
     injectStyle();
     renderSummary();
-
-    const observer = new MutationObserver(() => renderSummary());
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true
-    });
-
-    window.setInterval(renderSummary, 1500);
+    window.setInterval(renderSummary, RENDER_INTERVAL_MS);
   }
 
   if (document.readyState === "loading") {
