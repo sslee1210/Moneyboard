@@ -1,0 +1,7 @@
+.flow-alert-panel{border-radius:16px;background:#f8faf8;box-shadow:0 16px 36px rgba(28,32,35,.08)}
+.flow-alert-header{padding:14px 16px 10px}.flow-alert-header h2{margin:2px 0 0;font-size:18px}
+.flow-alert-rule{margin:0;padding:8px 16px;font-size:11px;background:#fff}
+.flow-alert-list{gap:7px;max-height:calc(100vh - 560px);min-height:120px;padding:10px 12px 14px}
+.flow-alert-item{gap:6px;padding:9px 10px;border-radius:12px;background:#fff}
+.flow-alert-name-row strong{font-size:13px}.flow-alert-name-row small,.flow-alert-meta span,.flow-alert-money span{font-size:10px}
+.flow-alert-money strong{font-size:14px}
