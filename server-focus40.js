@@ -28,6 +28,12 @@ const FOCUS_STOCKS_PER_SECTOR = Math.max(1, Number(process.env.KIS_FOCUS_STOCKS_
 const FOCUS_MAX_CODES = Math.max(1, Number(process.env.KIS_FOCUS_MAX_CODES || 40));
 const BACKFILL_INTERVAL_MS = Math.max(1_000, Number(process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || 2_000));
 const RATE_LIMIT_COOLDOWN_MS = Math.max(5_000, Number(process.env.KIS_RATE_LIMIT_COOLDOWN_MS || 15_000));
+const FLOW_KEEP_MINUTES = Math.max(2, Number(process.env.MINUTE_FLOW_KEEP || 8));
+const FLOW_LEVELS = [
+  { thresholdMillion: 5_000, label: "50억/min", icon: "⚡", severity: "ultra" },
+  { thresholdMillion: 3_000, label: "30억/min", icon: "🚀", severity: "strong" },
+  { thresholdMillion: 1_000, label: "10억/min", icon: "🔥", severity: "watch" }
+];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +52,7 @@ const restQuotes = new Map();
 const restErrors = new Map();
 const pendingSet = new Set();
 let pendingCodes = [];
+const minuteFlowByCode = new Map();
 
 const backfill = {
   enabled: KIS_ENABLED,
@@ -77,6 +84,58 @@ function quoteTradeAmount(quote) {
   if (Number.isFinite(amount) && amount > 0) return amount;
   const derived = (Number(quote?.price || 0) * Number(quote?.volume || 0)) / 1_000_000;
   return Number.isFinite(derived) && derived > 0 ? derived : 0;
+}
+
+function flowLevel(amountMillion) {
+  return FLOW_LEVELS.find((level) => amountMillion >= level.thresholdMillion) || null;
+}
+
+function minuteKey(at = new Date()) {
+  const date = at instanceof Date ? at : new Date(at);
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const h = String(date.getHours()).padStart(2, "0");
+  const min = String(date.getMinutes()).padStart(2, "0");
+  return { key: `${y}${m}${d}-${h}${min}`, label: `${h}:${min}` };
+}
+
+function recordMinuteFlow(code, cumulativeTradeAmountMillion, updatedAt) {
+  const cumulative = Number(cumulativeTradeAmountMillion || 0);
+  if (!isValidStockCode(code) || !Number.isFinite(cumulative) || cumulative <= 0) return null;
+
+  const now = updatedAt ? new Date(updatedAt) : new Date();
+  const clock = minuteKey(now);
+  let state = minuteFlowByCode.get(code);
+  if (!state) {
+    state = { lastCumulative: cumulative, bars: [] };
+    minuteFlowByCode.set(code, state);
+  }
+
+  let delta = cumulative - Number(state.lastCumulative || 0);
+  if (!Number.isFinite(delta) || delta < 0 || delta > 200_000) delta = 0;
+  state.lastCumulative = cumulative;
+
+  let bar = state.bars[state.bars.length - 1];
+  if (!bar || bar.key !== clock.key) {
+    bar = { key: clock.key, minute: clock.label, amountMillion: 0, updatedAt: now.toISOString() };
+    state.bars.push(bar);
+    if (state.bars.length > FLOW_KEEP_MINUTES) state.bars = state.bars.slice(-FLOW_KEEP_MINUTES);
+  }
+
+  if (delta > 0) bar.amountMillion += delta;
+  bar.updatedAt = now.toISOString();
+
+  const level = flowLevel(bar.amountMillion);
+  return {
+    ...bar,
+    amountMillion: Number(bar.amountMillion.toFixed(3)),
+    amountWon: Math.round(bar.amountMillion * 1_000_000),
+    label: level ? `${level.icon} ${level.label}` : "",
+    severity: level?.severity || "normal",
+    alert: Boolean(level),
+    thresholdMillion: level?.thresholdMillion || 1_000
+  };
 }
 
 function isRateLimitError(error) {
@@ -182,6 +241,7 @@ async function runBackfillStep() {
 
 function getBackfillStatus() {
   const realtime = getRealtimeStatus();
+  const minuteFlowAlerts = [...minuteFlowByCode.values()].filter((state) => state.bars?.some((bar) => flowLevel(bar.amountMillion))).length;
   return {
     ...backfill,
     pendingSize: pendingCodes.length,
@@ -197,7 +257,8 @@ function getBackfillStatus() {
     cooldownMsRemaining: Math.max(0, cooldownUntil - Date.now()),
     realtimeMaxCodes: realtime.maxCodes,
     realtimeSubscribedCount: realtime.subscribedCount,
-    realtimeQuoteCount: realtime.quoteCount
+    realtimeQuoteCount: realtime.quoteCount,
+    minuteFlowAlerts
   };
 }
 
@@ -237,6 +298,7 @@ function normalizeStock(rawStock) {
   if (hasRealtime || hasRest) {
     const quote = hasRealtime ? withRest.kisRealtimeQuote : withRest.kisQuote;
     const tradeAmountMillion = quoteTradeAmount(quote);
+    const minuteFlow = recordMinuteFlow(code, tradeAmountMillion, quote.updatedAt || withRest.updatedAt);
     return {
       stock: {
         ...withRest,
@@ -244,12 +306,16 @@ function normalizeStock(rawStock) {
         volume: Number(quote.volume || 0),
         tradeAmountMillion,
         kisTradeAmountMillion: tradeAmountMillion,
+        minuteFlow,
+        minuteTradeAmountMillion: minuteFlow?.amountMillion || 0,
+        minuteTradeAmountLabel: minuteFlow?.label || "",
+        minuteFlowAlert: Boolean(minuteFlow?.alert),
         apiNumericPending: false,
-        dataProvider: hasRealtime ? "KIS-WS" : "KIS",
+        dataProvider: hasRealtime ? (minuteFlow?.alert ? `KIS-WS ${minuteFlow.label}` : "KIS-WS") : "KIS",
         tradingValueValidation: {
           ...(withRest.tradingValueValidation || {}),
           status: hasRealtime ? "kis-realtime" : "kis-verified",
-          source: hasRealtime ? "KIS WebSocket focus-40" : "KIS REST focus-40",
+          source: hasRealtime ? `KIS WebSocket focus-40${minuteFlow?.alert ? ` · ${minuteFlow.label}` : ""}` : "KIS REST focus-40",
           updatedAt: quote.updatedAt
         }
       },
@@ -264,12 +330,16 @@ function normalizeStock(rawStock) {
       volume: null,
       tradeAmountMillion: 0,
       kisTradeAmountMillion: 0,
+      minuteFlow: null,
+      minuteTradeAmountMillion: 0,
+      minuteTradeAmountLabel: "",
+      minuteFlowAlert: false,
       apiNumericPending: true,
-      dataProvider: "KIS API pending",
+      dataProvider: "API pending",
       tradingValueValidation: {
         ...(rawStock.tradingValueValidation || {}),
         status: "api-pending",
-        source: "KIS focus-40 pending; Naver numeric fields ignored"
+        source: "Realtime numeric provider pending; Naver numeric fields ignored"
       }
     },
     reason: "pending"
@@ -343,13 +413,14 @@ function recalculateSector(sector) {
     validationStatusCounts,
     kisVerifiedCount: validationStatusCounts["kis-verified"] || 0,
     kisRealtimeCount: validationStatusCounts["kis-realtime"] || 0,
+    minuteFlowAlertCount: apiReadyStocks.filter((stock) => stock.minuteFlowAlert).length,
     validation: {
       ...(sector.validation || {}),
       status: stockOrderErrorCount === 0 ? "ok" : "warning",
       stockOrderErrorCount,
       apiPendingCount: pending.length,
       apiReadyStockCount: apiReadyStocks.length,
-      numericSourcePolicy: "KIS REST/WebSocket focus-40 only; Naver numeric fields ignored",
+      numericSourcePolicy: "Realtime numeric provider focus-40 only; Naver numeric fields ignored",
       validationStatusCounts
     },
     realtime: getRealtimeStatus(),
@@ -366,9 +437,10 @@ function buildTotals(sectors = []) {
       acc.stockCount += sector.stockCount || 0;
       acc.apiReadyStockCount += sector.apiReadyStockCount || 0;
       acc.apiPendingCount += sector.apiPendingCount || 0;
+      acc.minuteFlowAlertCount += sector.minuteFlowAlertCount || 0;
       return acc;
     },
-    { tradingValueMillion: 0, volume: 0, stockCount: 0, apiReadyStockCount: 0, apiPendingCount: 0 }
+    { tradingValueMillion: 0, volume: 0, stockCount: 0, apiReadyStockCount: 0, apiPendingCount: 0, minuteFlowAlertCount: 0 }
   );
 }
 
@@ -384,10 +456,11 @@ function sanitizeSnapshot(snapshot) {
   return {
     ...snapshot,
     mode: "localhost-focus40-kis",
-    provider: "KIS REST/WebSocket focus-40 numeric fields + Naver stock list",
-    rankingBasis: "top-8-sectors-x-top-5-stocks-kis-focus",
-    validationMethod: "Naver selects focus candidates; KIS REST/WebSocket supplies displayed volume/trading value",
+    provider: "Realtime numeric provider focus-40 + Naver stock list",
+    rankingBasis: "top-8-sectors-x-top-5-stocks-realtime-focus",
+    validationMethod: "Naver selects focus candidates; realtime numeric provider supplies displayed volume/trading value",
     focusPolicy: { topSectors: FOCUS_SECTOR_COUNT, topStocksPerSector: FOCUS_STOCKS_PER_SECTOR, maxCodes: FOCUS_MAX_CODES, codes: lastFocusCodes, updatedAt: lastFocusUpdatedAt },
+    minuteFlowPolicy: { thresholdMillion: 1_000, levels: FLOW_LEVELS, unit: "million KRW per minute" },
     excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "Naver volume/trading-value numbers"],
     sectors,
     totals,
@@ -397,9 +470,10 @@ function sanitizeSnapshot(snapshot) {
       errorCount: orderErrorCount,
       apiReadyStockCount: totals.apiReadyStockCount,
       apiPendingCount: totals.apiPendingCount,
+      minuteFlowAlertCount: totals.minuteFlowAlertCount,
       backfill: getBackfillStatus(),
       realtime: getRealtimeStatus(),
-      numericSourcePolicy: "Focus-40 KIS-only numeric display; Naver numeric fields ignored"
+      numericSourcePolicy: "Focus-40 realtime numeric display; Naver numeric fields ignored"
     },
     backfill: getBackfillStatus(),
     realtime: getRealtimeStatus(),
@@ -429,11 +503,12 @@ async function buildFocusSnapshot(force = false) {
 function bootstrapSnapshot() {
   return {
     mode: "localhost-focus40-kis",
-    provider: "KIS REST/WebSocket focus-40 numeric fields + Naver stock list",
+    provider: "Realtime numeric provider focus-40 + Naver stock list",
     overviewProvider: "Yahoo Finance",
-    rankingBasis: "top-8-sectors-x-top-5-stocks-kis-focus",
-    validationMethod: "Naver selects focus candidates; KIS REST/WebSocket supplies displayed volume/trading value",
+    rankingBasis: "top-8-sectors-x-top-5-stocks-realtime-focus",
+    validationMethod: "Naver selects focus candidates; realtime numeric provider supplies displayed volume/trading value",
     focusPolicy: { topSectors: FOCUS_SECTOR_COUNT, topStocksPerSector: FOCUS_STOCKS_PER_SECTOR, maxCodes: FOCUS_MAX_CODES, codes: lastFocusCodes },
+    minuteFlowPolicy: { thresholdMillion: 1_000, levels: FLOW_LEVELS, unit: "million KRW per minute" },
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
     overviewCacheMs: OVERVIEW_CACHE_MS,
@@ -460,12 +535,13 @@ app.use((request, response, next) => {
 
 app.get("/api/provider", (_request, response) => {
   response.json({
-    provider: "KIS REST/WebSocket focus-40 numeric fields + Naver stock list",
+    provider: "Realtime numeric provider focus-40 + Naver stock list",
     overviewProvider: "Yahoo Finance",
     mode: "localhost-focus40-kis",
-    rankingBasis: "top-8-sectors-x-top-5-stocks-kis-focus",
-    validationMethod: "Naver selects focus candidates; KIS REST/WebSocket supplies displayed volume/trading value",
+    rankingBasis: "top-8-sectors-x-top-5-stocks-realtime-focus",
+    validationMethod: "Naver selects focus candidates; realtime numeric provider supplies displayed volume/trading value",
     focusPolicy: { topSectors: FOCUS_SECTOR_COUNT, topStocksPerSector: FOCUS_STOCKS_PER_SECTOR, maxCodes: FOCUS_MAX_CODES, codes: lastFocusCodes, updatedAt: lastFocusUpdatedAt },
+    minuteFlowPolicy: { thresholdMillion: 1_000, levels: FLOW_LEVELS, unit: "million KRW per minute" },
     excludes: ["ETF", "ETN", "ELW", "invalid stock code rows", "Naver volume/trading-value numbers"],
     refreshMs: STREAM_PUSH_MS,
     marketCacheMs: MARKET_CACHE_MS,
@@ -566,8 +642,9 @@ app.get(/.*/, (_request, response) => response.sendFile(path.join(__dirname, "di
 startKisRealtime();
 app.listen(PORT, () => {
   console.log(`Moneyboard focus-40 local server listening on http://localhost:${PORT}`);
-  console.log("Provider: KIS REST/WebSocket focus-40 numeric fields + Naver stock list");
+  console.log("Provider: Realtime numeric provider focus-40 + Naver stock list");
   console.log(`Focus policy: topSectors=${FOCUS_SECTOR_COUNT}, topStocksPerSector=${FOCUS_STOCKS_PER_SECTOR}, maxCodes=${FOCUS_MAX_CODES}`);
+  console.log("Minute flow policy: 10억/min watch, 30억/min strong, 50억/min ultra");
   console.log(`KIS status: ${JSON.stringify(getKisStatus())}`);
   console.log(`Realtime status: ${JSON.stringify(getRealtimeStatus())}`);
   console.log(`Backfill status: ${JSON.stringify(getBackfillStatus())}`);
