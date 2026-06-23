@@ -160,6 +160,51 @@ function formatPercent(value = 0) {
   return `${sign}${percentFormatter.format(number)}%`;
 }
 
+function formatOverviewValue(item) {
+  const value = Number(item?.value);
+  if (!Number.isFinite(value)) return "수집 대기";
+  if (item?.kind === "fx") return `${percentFormatter.format(value)}원`;
+  return percentFormatter.format(value);
+}
+
+function formatTime(value) {
+  if (!value) return "--:--:--";
+  try {
+    return new Intl.DateTimeFormat("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit"
+    }).format(new Date(value));
+  } catch {
+    return "--:--:--";
+  }
+}
+
+function overviewItems(overview) {
+  const preferredOrder = ["kospi", "kosdaq", "nasdaq100-futures", "usd-krw", "sp500"];
+  const items = overview?.items || [];
+  const byId = new Map(items.map((item) => [item.id, item]));
+  const ordered = preferredOrder.map((id) => byId.get(id)).filter(Boolean);
+  return ordered.length ? ordered : items;
+}
+
+function sparklinePath(points, width = 180, height = 46, padding = 3) {
+  const values = (points || []).map((point) => Number(point.value)).filter((value) => Number.isFinite(value));
+  if (values.length < 2) return "";
+
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || Math.max(Math.abs(max) * 0.001, 1);
+
+  return values
+    .map((value, index) => {
+      const x = padding + (index / Math.max(values.length - 1, 1)) * (width - padding * 2);
+      const y = padding + (1 - (value - min) / range) * (height - padding * 2);
+      return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+    })
+    .join(" ");
+}
+
 function changeClass(value = 0) {
   if (value > 0) return "positive";
   if (value < 0) return "negative";
@@ -315,6 +360,43 @@ function useMarketStream() {
   }, []);
 
   return { snapshot, streamState, error };
+}
+
+function MarketOverviewStrip({ overview }) {
+  const items = overviewItems(overview);
+  if (!items.length) return null;
+
+  return (
+    <section className="market-overview-strip" aria-label="시장 주요 지표">
+      {items.map((item) => {
+        const changeRate = item.changeRate || 0;
+        const points = item.points || [];
+        const path = sparklinePath(points);
+        const qualityLabel = item.dataQuality === "ok" ? `${item.pointCount || points.length}p` : "지연/부족";
+
+        return (
+          <article className={`market-overview-card ${changeClass(changeRate)}`} key={item.id || item.symbol || item.label}>
+            <div className="market-overview-head">
+              <span>{item.label}</span>
+              <em>{item.symbol}</em>
+            </div>
+            <div className="market-overview-main">
+              <strong>{formatOverviewValue(item)}</strong>
+              <small className={changeClass(changeRate)}>{formatPercent(changeRate)}</small>
+            </div>
+            <svg className="market-sparkline" viewBox="0 0 180 46" preserveAspectRatio="none" role="img" aria-label={`${item.label} 미니 차트`}>
+              <line x1="0" y1="23" x2="180" y2="23" />
+              {path ? <path d={path} /> : null}
+            </svg>
+            <div className="market-overview-foot">
+              <span>{item.provider || overview?.provider || "source"}</span>
+              <span>{qualityLabel} · {formatTime(item.updatedAt || overview?.updatedAt)}</span>
+            </div>
+          </article>
+        );
+      })}
+    </section>
+  );
 }
 
 function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
@@ -685,13 +767,7 @@ export default function App() {
   }, [volumeProfileKey, sectorDetail?.stocks]);
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
-  const updatedTime = snapshot?.updatedAt
-    ? new Intl.DateTimeFormat("ko-KR", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      }).format(new Date(snapshot.updatedAt))
-    : "--:--:--";
+  const updatedTime = formatTime(snapshot?.updatedAt);
 
   return (
     <main>
@@ -716,6 +792,8 @@ export default function App() {
           </span>
         </div>
       </header>
+
+      <MarketOverviewStrip overview={snapshot?.overview} />
 
       <section className="metrics-grid">
         <MetricCard
