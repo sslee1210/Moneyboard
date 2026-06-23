@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const app = express();
 const PORT = Number(process.env.PORT || 4173);
 const NAVER_BASE_URL = "https://finance.naver.com";
+const READER_BASE_URL = "https://r.jina.ai/http://finance.naver.com";
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
 const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
@@ -44,6 +45,13 @@ function compactText(value) {
     .trim();
 }
 
+function cleanCell(value) {
+  return compactText(value)
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/_/g, "");
+}
+
 function parseNumber(value) {
   const normalized = compactText(value).replace(/,/g, "").replace(/[^\d.-]/g, "");
   if (!normalized || normalized === "-" || normalized === ".") return 0;
@@ -57,6 +65,11 @@ function parsePercent(value) {
 
 function formatNaverPath(pathname) {
   return pathname.startsWith("http") ? pathname : `${NAVER_BASE_URL}${pathname}`;
+}
+
+function formatReaderPath(pathname) {
+  const separator = pathname.includes("?") ? "&" : "?";
+  return `${READER_BASE_URL}${pathname}${separator}t=${Date.now()}`;
 }
 
 async function fetchHtml(pathname) {
@@ -93,6 +106,31 @@ async function fetchHtml(pathname) {
   }
 }
 
+async function fetchReaderText(pathname) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS + 10_000);
+
+  try {
+    const response = await fetch(formatReaderPath(pathname), {
+      signal: controller.signal,
+      headers: { accept: "text/plain, text/markdown" }
+    });
+    if (!response.ok) throw new Error(`Naver reader responded with ${response.status}`);
+    return response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function splitRow(row) {
+  return row
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
 function parseSectorList(html) {
   const $ = cheerio.load(html);
   const sectors = [];
@@ -127,36 +165,49 @@ function parseSectorList(html) {
   return sectors;
 }
 
-function parseSectorDetail(html, sector) {
+function parseHtmlStockRows(html) {
   const $ = cheerio.load(html);
   const stocks = [];
+  const seen = new Set();
 
-  $("td.name").each((_, nameCell) => {
-    const row = $(nameCell).closest("tr");
+  $('a[href*="/item/main.naver?code="]').each((_, linkEl) => {
+    const link = $(linkEl);
+    const row = link.closest("tr");
+    const href = link.attr("href") || "";
+    const url = new URL(href, NAVER_BASE_URL);
+    const code = url.searchParams.get("code");
+    const name = compactText(link.text());
     const cells = row
       .children("td")
       .map((__, cell) => compactText($(cell).text()))
       .get();
-    const link = $(nameCell).find('a[href*="/item/main.naver?code="]').first();
-    const href = link.attr("href") || "";
-    const code = new URL(href, NAVER_BASE_URL).searchParams.get("code");
-    const name = compactText(link.text());
 
-    if (!code || !name || cells.length < 9) return;
+    if (!code || !/^\d{6}$/.test(code) || !name || seen.has(code) || cells.length < 8) return;
+    seen.add(code);
 
-    const changeRate = parsePercent(cells[3]);
+    const nameIndex = cells.findIndex((cell) => cell.includes(name));
+    const offset = nameIndex >= 0 ? nameIndex : 0;
+    const price = parseNumber(cells[offset + 1]);
+    const changeAmount = parseNumber(cells[offset + 2]);
+    const changeRate = parsePercent(cells[offset + 3]);
+    const bid = parseNumber(cells[offset + 4]);
+    const ask = parseNumber(cells[offset + 5]);
+    const volume = parseNumber(cells[offset + 6]);
+    const tradeAmountMillion = parseNumber(cells[offset + 7]);
+    const previousVolume = parseNumber(cells[offset + 8]);
+
     stocks.push({
       code,
       name,
-      price: parseNumber(cells[1]),
-      changeAmount: parseNumber(cells[2]),
+      price,
+      changeAmount,
       changeRate,
-      bid: parseNumber(cells[4]),
-      ask: parseNumber(cells[5]),
-      volume: parseNumber(cells[6]),
-      tradeAmountMillion: parseNumber(cells[7]),
-      previousVolume: parseNumber(cells[8]),
-      market: compactText($(nameCell).find(".dot").text()) === "*" ? "KOSDAQ" : "KOSPI",
+      bid,
+      ask,
+      volume,
+      tradeAmountMillion,
+      previousVolume,
+      market: compactText(row.find(".dot").text()) === "*" ? "KOSDAQ" : "KOSPI",
       direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
       provider: "Naver Finance",
       naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
@@ -164,7 +215,50 @@ function parseSectorDetail(html, sector) {
   });
 
   stocks.sort((left, right) => right.tradeAmountMillion - left.tradeAmountMillion);
+  return stocks;
+}
 
+function parseReaderStockRows(markdown) {
+  const stocks = [];
+  const seen = new Set();
+
+  markdown
+    .split(/\r?\n/)
+    .filter((line) => line.includes("/item/main.naver?code=") && line.includes("|"))
+    .forEach((line) => {
+      const rawCells = splitRow(line).map(cleanCell);
+      const firstCell = rawCells.find((cell) => cell.includes("/item/main.naver?code=")) || rawCells[0] || "";
+      const match = firstCell.match(
+        /\[([^\]]+)\]\(https?:\/\/finance\.naver\.com\/item\/main\.naver\?code=(\d{6})\)(\*)?/
+      );
+
+      if (!match || rawCells.length < 9 || seen.has(match[2])) return;
+      seen.add(match[2]);
+
+      const changeRate = parseNumber(rawCells[3]);
+      stocks.push({
+        code: match[2],
+        name: compactText(match[1]),
+        price: parseNumber(rawCells[1]),
+        changeAmount: parseNumber(rawCells[2]),
+        changeRate,
+        bid: parseNumber(rawCells[4]),
+        ask: parseNumber(rawCells[5]),
+        volume: parseNumber(rawCells[6]),
+        tradeAmountMillion: parseNumber(rawCells[7]),
+        previousVolume: parseNumber(rawCells[8]),
+        market: match[3] ? "KOSDAQ" : "KOSPI",
+        direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
+        provider: "Naver Finance reader fallback",
+        naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${match[2]}`
+      });
+    });
+
+  stocks.sort((left, right) => right.tradeAmountMillion - left.tradeAmountMillion);
+  return stocks;
+}
+
+function buildDetailFromStocks(sector, stocks, provider = "Naver Finance") {
   const tradingValueMillion = stocks.reduce((sum, stock) => sum + stock.tradeAmountMillion, 0);
   const volume = stocks.reduce((sum, stock) => sum + stock.volume, 0);
   const weightedChangeRate =
@@ -179,9 +273,17 @@ function parseSectorDetail(html, sector) {
     weightedChangeRate,
     topStocks: stocks.slice(0, 8),
     stocks,
-    provider: "Naver Finance",
+    provider,
     fetchedAt: new Date().toISOString()
   };
+}
+
+function parseSectorDetail(html, sector) {
+  return buildDetailFromStocks(sector, parseHtmlStockRows(html), "Naver Finance");
+}
+
+function parseReaderSectorDetail(markdown, sector) {
+  return buildDetailFromStocks(sector, parseReaderStockRows(markdown), "Naver Finance reader fallback");
 }
 
 async function mapLimit(items, limit, mapper) {
@@ -209,7 +311,15 @@ async function getSectorDetail(sector, options = false) {
   if (!force && cached?.promise) return cached.promise;
 
   const promise = fetchHtml(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`)
-    .then((html) => parseSectorDetail(html, sector))
+    .then(async (html) => {
+      const direct = parseSectorDetail(html, sector);
+      if (direct.stocks.length > 0 && direct.tradingValueMillion > 0) return direct;
+
+      const markdown = await fetchReaderText(`/sise/sise_group_detail.naver?type=upjong&no=${sector.id}`);
+      const fallback = parseReaderSectorDetail(markdown, sector);
+      if (fallback.stocks.length > 0) return fallback;
+      return { ...direct, error: "Naver detail parser returned no stock rows" };
+    })
     .then((data) => {
       detailCache.set(cacheKey, { data, expiresAt: Date.now() + DETAIL_CACHE_MS, promise: null });
       return data;
@@ -326,7 +436,7 @@ function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
   return {
     sampleSize: items.length,
     limit,
-    provider: "Naver Finance",
+    provider: "Naver Finance day-volume only",
     byCode: Object.fromEntries(items.map((item) => [item.code, item])),
     counts: {
       day: items.filter((item) => item.day !== null && item.day !== undefined).length,
@@ -367,7 +477,7 @@ app.get("/api/health", (_, response) => {
 app.get("/api/provider", (_, response) => {
   response.json({
     market: "Naver Finance",
-    sectorDetail: "Naver Finance",
+    sectorDetail: "Naver Finance + reader fallback",
     volumeProfile: "Naver Finance day-volume only",
     kis: { configured: false, enabled: false }
   });
@@ -441,5 +551,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === __filename) {
   app.listen(PORT, () => {
     console.log(`Moneyboard live server listening on http://localhost:${PORT}`);
     console.log("Provider: Naver Finance only. KIS is disabled.");
+    console.log("Sector detail parser: direct Naver HTML + reader fallback.");
   });
 }
