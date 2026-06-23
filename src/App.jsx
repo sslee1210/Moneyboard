@@ -1,5 +1,5 @@
 import { Activity, BarChart3, Clock3, Database, LineChart, Radio, Search, TrendingUp } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -34,6 +34,14 @@ const volumePeriods = [
 ];
 const volumePeriodLabels = Object.fromEntries(volumePeriods.map((period) => [period.id, period.label]));
 const volumeHistoryLimit = 12;
+const flowAlertThresholdMillion = 1_000;
+const flowAlertWindows = [
+  { id: "1m", label: "1분봉", durationMs: 60_000 },
+  { id: "3m", label: "3분봉", durationMs: 180_000 }
+];
+const flowAlertCooldownMs = 180_000;
+const flowAlertHistoryMs = 180_000;
+const flowAlertLimit = 30;
 
 function apiUrl(path) {
   return configuredApiBase ? `${configuredApiBase}${path}` : path;
@@ -215,6 +223,120 @@ function shortName(name = "") {
   return name.length > 8 ? `${name.slice(0, 8)}...` : name;
 }
 
+function compactTrackedStocks(snapshot) {
+  const byCode = new Map();
+
+  (snapshot?.sectors || []).forEach((sector, sectorIndex) => {
+    (sector.topStocks || []).forEach((stock) => {
+      if (!stock?.code) return;
+      const tradeAmountMillion = Number(stock.tradeAmountMillion);
+      if (!Number.isFinite(tradeAmountMillion)) return;
+
+      const current = byCode.get(stock.code);
+      const next = {
+        code: stock.code,
+        name: stock.name,
+        market: stock.market,
+        price: stock.price,
+        changeRate: stock.changeRate,
+        tradeAmountMillion,
+        sectorName: sector.name,
+        sectorRank: sector.rank || sectorIndex + 1,
+        naverUrl: stock.naverUrl
+      };
+
+      if (!current || tradeAmountMillion > current.tradeAmountMillion) {
+        byCode.set(stock.code, next);
+      }
+    });
+  });
+
+  return [...byCode.values()];
+}
+
+function buildFlowAlerts(snapshot, samplesByCode, cooldownBySignal, now) {
+  const trackedStocks = compactTrackedStocks(snapshot);
+  const maxWindowMs = Math.max(...flowAlertWindows.map((windowItem) => windowItem.durationMs));
+  const nextAlerts = [];
+
+  trackedStocks.forEach((stock) => {
+    const currentValue = stock.tradeAmountMillion;
+    const currentSamples = samplesByCode.get(stock.code) || [];
+    const lastSample = currentSamples[currentSamples.length - 1];
+    const resetSamples = lastSample && currentValue < lastSample.value;
+    const nextSamples = resetSamples ? [] : currentSamples.filter((sample) => now - sample.ts <= maxWindowMs + 5_000);
+
+    if (!lastSample || resetSamples || currentValue !== lastSample.value || now - lastSample.ts >= 1_500) {
+      nextSamples.push({ ts: now, value: currentValue });
+    }
+
+    samplesByCode.set(stock.code, nextSamples);
+
+    if (nextSamples.length < 2) return;
+
+    flowAlertWindows.forEach((windowItem) => {
+      const windowSamples = nextSamples.filter((sample) => now - sample.ts <= windowItem.durationMs);
+      if (windowSamples.length < 2) return;
+
+      const base = windowSamples[0];
+      const elapsedMs = now - base.ts;
+      const deltaMillion = currentValue - base.value;
+      if (elapsedMs <= 0 || deltaMillion < flowAlertThresholdMillion) return;
+
+      const signalKey = `${stock.code}:${windowItem.id}`;
+      const lastAlertAt = cooldownBySignal.get(signalKey) || 0;
+      if (now - lastAlertAt < flowAlertCooldownMs) return;
+
+      cooldownBySignal.set(signalKey, now);
+      nextAlerts.push({
+        id: `${signalKey}:${now}`,
+        code: stock.code,
+        name: stock.name,
+        market: stock.market,
+        price: stock.price,
+        changeRate: stock.changeRate,
+        sectorName: stock.sectorName,
+        sectorRank: stock.sectorRank,
+        naverUrl: stock.naverUrl,
+        windowLabel: windowItem.label,
+        deltaMillion,
+        elapsedSeconds: Math.max(1, Math.round(elapsedMs / 1000)),
+        triggeredAt: new Date(now).toISOString()
+      });
+    });
+  });
+
+  const activeCodes = new Set(trackedStocks.map((stock) => stock.code));
+  [...samplesByCode.keys()].forEach((code) => {
+    if (!activeCodes.has(code)) samplesByCode.delete(code);
+  });
+
+  return nextAlerts.sort((left, right) => right.deltaMillion - left.deltaMillion);
+}
+
+function useFlowAlerts(snapshot) {
+  const samplesByCodeRef = useRef(new Map());
+  const cooldownBySignalRef = useRef(new Map());
+  const [alerts, setAlerts] = useState([]);
+
+  useEffect(() => {
+    if (!snapshot?.sectors?.length) return;
+    const now = Date.now();
+    const nextAlerts = buildFlowAlerts(snapshot, samplesByCodeRef.current, cooldownBySignalRef.current, now);
+
+    if (nextAlerts.length) {
+      setAlerts((current) => {
+        const freshCurrent = current.filter((alert) => now - new Date(alert.triggeredAt).getTime() <= flowAlertHistoryMs);
+        return [...nextAlerts, ...freshCurrent].slice(0, flowAlertLimit);
+      });
+    } else {
+      setAlerts((current) => current.filter((alert) => now - new Date(alert.triggeredAt).getTime() <= flowAlertHistoryMs));
+    }
+  }, [snapshot]);
+
+  return alerts;
+}
+
 function useMarketStream() {
   const [snapshot, setSnapshot] = useState(null);
   const [streamState, setStreamState] = useState("connecting");
@@ -238,7 +360,7 @@ function useMarketStream() {
         try {
           const data = await loadStaticMarket();
           if (!closed) {
-            setSnapshot(data);
+            setSnapshot((current) => current || data);
             setStreamState("polling");
             setError(`실시간 수집 재시도 중: ${liveError.message}`);
           }
@@ -278,7 +400,7 @@ function useMarketStream() {
         try {
           const data = await loadStaticMarket();
           if (!closed) {
-            setSnapshot(data);
+            setSnapshot((current) => current || data);
             setStreamState("static");
             setError("정적 스냅샷");
           }
@@ -467,6 +589,50 @@ function SectorCard({ sector, selected, maxValue, onSelect }) {
   );
 }
 
+function FlowAlertPanel({ alerts }) {
+  return (
+    <aside className="flow-alert-panel" aria-label="분봉 거래대금 알림">
+      <div className="flow-alert-header">
+        <div>
+          <span className="eyebrow">실시간 알림</span>
+          <h2>분봉 10억 유입</h2>
+        </div>
+        <strong>{alerts.length}</strong>
+      </div>
+      <p className="flow-alert-rule">1분봉 또는 3분봉 누적 거래대금 증가분이 10억 이상이면 표시</p>
+      <div className="flow-alert-list">
+        {alerts.length ? (
+          alerts.map((alert) => (
+            <a className="flow-alert-item" key={alert.id} href={alert.naverUrl} target="_blank" rel="noreferrer">
+              <div className="flow-alert-topline">
+                <span className="flow-alert-badge">{alert.windowLabel}</span>
+                <time>{formatTime(alert.triggeredAt)}</time>
+              </div>
+              <div className="flow-alert-name-row">
+                <strong>{alert.name}</strong>
+                <small>{alert.code} · {alert.market}</small>
+              </div>
+              <div className="flow-alert-meta">
+                <span>{alert.sectorRank}위 {alert.sectorName}</span>
+                <span className={changeClass(alert.changeRate)}>{formatPercent(alert.changeRate)}</span>
+              </div>
+              <div className="flow-alert-money">
+                <strong>+{formatTradingValue(alert.deltaMillion)}</strong>
+                <span>{alert.elapsedSeconds}초 누적</span>
+              </div>
+            </a>
+          ))
+        ) : (
+          <div className="flow-alert-empty">
+            <strong>감시 중</strong>
+            <span>10억 이상 유입 종목이 발생하면 여기에 쌓입니다.</span>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
+
 function stockPeriodVolume(stock, volumeProfile, period) {
   if (period === "day") return stock.volume || 0;
   const periodData = volumeProfile?.byCode?.[stock.code];
@@ -649,6 +815,7 @@ function SectorDetail({
 
 export default function App() {
   const { snapshot, streamState, error } = useMarketStream();
+  const flowAlerts = useFlowAlerts(snapshot);
   const [selectedId, setSelectedId] = useState("");
   const [manualSelection, setManualSelection] = useState(false);
   const [query, setQuery] = useState("");
@@ -820,66 +987,70 @@ export default function App() {
         <MetricCard icon={Clock3} label="최근 수신" value={updatedTime} detail={error || "자동 갱신"} />
       </section>
 
-      <section className="workspace">
-        <section className="sector-panel">
-          <div className="panel-header sector-panel-header">
-            <div>
-              <span className="eyebrow">거래대금 랭킹</span>
-              <h2>섹터별 상위 종목</h2>
+      <section className="monitor-layout">
+        <section className="workspace workspace-main">
+          <section className="sector-panel">
+            <div className="panel-header sector-panel-header">
+              <div>
+                <span className="eyebrow">거래대금 랭킹</span>
+                <h2>섹터별 상위 종목</h2>
+              </div>
+              <div className="search-box">
+                <Search size={16} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
+              </div>
             </div>
-            <div className="search-box">
-              <Search size={16} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
+            <div className="sector-grid">
+              {filteredSectors.map((sector) => (
+                <SectorCard
+                  key={sector.id}
+                  sector={sector}
+                  selected={sector.id === selectedSector?.id}
+                  maxValue={maxTradingValue}
+                  onSelect={(nextSector) => {
+                    setManualSelection(true);
+                    setSelectedId(nextSector.id);
+                  }}
+                />
+              ))}
+              {!filteredSectors.length && <div className="empty-sector-card">검색된 섹터가 없습니다.</div>}
             </div>
-          </div>
-          <div className="sector-grid">
-            {filteredSectors.map((sector) => (
-              <SectorCard
-                key={sector.id}
-                sector={sector}
-                selected={sector.id === selectedSector?.id}
-                maxValue={maxTradingValue}
-                onSelect={(nextSector) => {
-                  setManualSelection(true);
-                  setSelectedId(nextSector.id);
-                }}
-              />
-            ))}
-            {!filteredSectors.length && <div className="empty-sector-card">검색된 섹터가 없습니다.</div>}
-          </div>
+          </section>
+
+          <section className="analysis-panel">
+            <div className="chart-card">
+              <div className="chart-title">
+                <BarChart3 size={18} />
+                <span>상위 섹터 거래대금</span>
+              </div>
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={topChartData} layout="vertical" margin={{ top: 8, right: 14, bottom: 0, left: 8 }}>
+                  <CartesianGrid stroke="#e7e9ef" vertical={false} />
+                  <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={formatTradingValue} />
+                  <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={118} />
+                  <Tooltip formatter={(value) => formatTradingValue(value)} />
+                  <Bar dataKey="거래대금" radius={[5, 5, 0, 0]}>
+                    {topChartData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.등락률 >= 0 ? "#2f7d68" : "#c94f4f"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            <SectorDetail
+              sector={selectedSector}
+              detail={sectorDetail}
+              loading={detailLoading}
+              volumePeriod={volumePeriod}
+              onVolumePeriodChange={setVolumePeriod}
+              volumeProfile={volumeProfile}
+              volumeLoading={volumeLoading}
+            />
+          </section>
         </section>
 
-        <section className="analysis-panel">
-          <div className="chart-card">
-            <div className="chart-title">
-              <BarChart3 size={18} />
-              <span>상위 섹터 거래대금</span>
-            </div>
-            <ResponsiveContainer width="100%" height={320}>
-              <BarChart data={topChartData} layout="vertical" margin={{ top: 8, right: 14, bottom: 0, left: 8 }}>
-                <CartesianGrid stroke="#e7e9ef" vertical={false} />
-                <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={formatTradingValue} />
-                <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={118} />
-                <Tooltip formatter={(value) => formatTradingValue(value)} />
-                <Bar dataKey="거래대금" radius={[5, 5, 0, 0]}>
-                  {topChartData.map((entry) => (
-                    <Cell key={entry.name} fill={entry.등락률 >= 0 ? "#2f7d68" : "#c94f4f"} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-
-          <SectorDetail
-            sector={selectedSector}
-            detail={sectorDetail}
-            loading={detailLoading}
-            volumePeriod={volumePeriod}
-            onVolumePeriodChange={setVolumePeriod}
-            volumeProfile={volumeProfile}
-            volumeLoading={volumeLoading}
-          />
-        </section>
+        <FlowAlertPanel alerts={flowAlerts} />
       </section>
 
       <footer>
