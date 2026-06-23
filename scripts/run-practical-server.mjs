@@ -21,8 +21,8 @@ const serverEnv = {
   KIS_FOCUS_SECTORS: process.env.KIS_FOCUS_SECTORS || "8",
   KIS_FOCUS_STOCKS_PER_SECTOR: process.env.KIS_FOCUS_STOCKS_PER_SECTOR || "5",
   KIS_FOCUS_MAX_CODES: process.env.KIS_FOCUS_MAX_CODES || "40",
-  KIS_FOCUS_BACKFILL_INTERVAL_MS: process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || "2000",
-  KIS_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_RATE_LIMIT_COOLDOWN_MS || "15000",
+  KIS_FOCUS_BACKFILL_INTERVAL_MS: process.env.KIS_FOCUS_BACKFILL_INTERVAL_MS || "3000",
+  KIS_RATE_LIMIT_COOLDOWN_MS: process.env.KIS_RATE_LIMIT_COOLDOWN_MS || "30000",
   KIS_REALTIME_MAX_CODES: process.env.KIS_REALTIME_MAX_CODES || "40"
 };
 
@@ -31,6 +31,8 @@ let primingStarted = false;
 let lastCoverage = -1;
 let lastValidation = null;
 let validationTimer = 0;
+let lastRateLimitCount = 0;
+let lastRateLimitNoticeAt = 0;
 
 function now() {
   return new Date().toLocaleTimeString("ko-KR", { hour12: false });
@@ -133,7 +135,20 @@ async function printDiagnostics() {
 
     console.log(`[doctor ${now()}] ${backfillLine} | ${realtimeLine} | ${validationLine}`);
 
-    if (backfill.lastError) console.log(`[doctor ${now()}] last KIS REST event: ${compactError(backfill.lastError)}`);
+    const rateLimitCount = Number(backfill.rateLimitCount || 0);
+    if (rateLimitCount > lastRateLimitCount) {
+      const nowMs = Date.now();
+      if (nowMs - lastRateLimitNoticeAt > 30_000) {
+        console.log(
+          `[doctor ${now()}] KIS REST rate-limit handled automatically: cooldown=${Math.ceil((backfill.cooldownMsRemaining || 0) / 1000)}s, failed code was re-queued. No manual action needed.`
+        );
+        lastRateLimitNoticeAt = nowMs;
+      }
+      lastRateLimitCount = rateLimitCount;
+    } else if (backfill.lastError && !/초당|거래건수|rate|limit|too many/i.test(backfill.lastError)) {
+      console.log(`[doctor ${now()}] last KIS REST event: ${compactError(backfill.lastError)}`);
+    }
+
     if (realtime.lastError) console.log(`[doctor ${now()}] last KIS WS error: ${compactError(realtime.lastError)}`);
     if (!coverageMoved && backfill.universeSize > 0 && backfill.pendingSize > 0 && backfill.inFlight === 0 && !backfill.cooldownMsRemaining) {
       console.log(`[doctor ${now()}] focus backfill is queued but not advancing. Check KIS REST status.`);
