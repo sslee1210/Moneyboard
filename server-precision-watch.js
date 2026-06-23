@@ -44,8 +44,6 @@ function isExchangeTradedProduct(stock) {
   const code = String(stock?.code || "").trim();
   const name = normalizeName(stock?.name);
 
-  // KRX common/preferred stocks use six numeric digits. Naver also exposes ETF/ETN-like
-  // products with alphanumeric codes such as 0193T0, which should never enter the watchlist.
   if (!/^\d{6}$/.test(code)) return true;
 
   return EXCLUDED_PRODUCT_KEYWORDS.some((keyword) => name.includes(keyword.toUpperCase()));
@@ -78,6 +76,32 @@ function scoreCandidate(stock, sector, sectorRank, stockRank) {
 
 function candidateKey(stock) {
   return stock?.code || `${stock?.name || "unknown"}:${stock?.market || ""}`;
+}
+
+function boolEnv(name, fallback = false) {
+  const value = String(process.env[name] || "").trim().toLowerCase();
+  if (!value) return fallback;
+  return ["1", "true", "yes", "on"].includes(value);
+}
+
+function getKisEnvStatus() {
+  const hasKey = Boolean(String(process.env.KIS_APP_KEY || "").trim());
+  const hasPin = Boolean(String(process.env.KIS_APP_SEC || "").trim());
+  const hasAccount = Boolean(String(process.env.KIS_ACCOUNT_NO || "").trim());
+  const configured = hasKey && hasPin && hasAccount;
+  const requestedEnabled = boolEnv("KIS_ENABLED", false);
+  const mode = String(process.env.KIS_MODE || "mock").trim().toLowerCase() === "prod" ? "prod" : "mock";
+
+  return {
+    configured,
+    enabled: requestedEnabled && configured,
+    requestedEnabled,
+    mode: mode === "mock" ? "mock-trading" : "prod-trading",
+    accountConfigured: hasAccount,
+    restBaseUrl: process.env.KIS_REST_BASE_URL || process.env.KIS_BASE_URL || "not-configured",
+    websocket: process.env.KIS_WS_URL || process.env.KIS_WEBSOCKET_URL ? "configured" : "not-configured",
+    approvalKey: process.env.KIS_APPROVAL_KEY ? "configured" : "not-configured"
+  };
 }
 
 export function buildPrecisionWatchlist(snapshot, options = {}) {
@@ -156,18 +180,22 @@ export function buildPrecisionWatchlist(snapshot, options = {}) {
 }
 
 export function getPrecisionWatchAdapterStatus() {
-  const provider = process.env.PRECISION_API_PROVIDER || "none";
-  const enabled = process.env.PRECISION_API_ENABLED === "true";
+  const kis = getKisEnvStatus();
+  const provider = process.env.PRECISION_API_PROVIDER || (kis.configured ? "kis" : "none");
+  const requestedEnabled = process.env.PRECISION_API_ENABLED === "true";
+  const enabled = requestedEnabled && provider === "kis" && kis.enabled;
   const market = process.env.PRECISION_MARKET_SCOPE || "KRX_SELECTED";
 
   return {
     enabled,
+    requestedEnabled,
     provider,
     market,
-    websocket: enabled ? "ready-for-adapter" : "not-configured",
-    restPolling: enabled ? "fallback-only" : "not-configured",
+    websocket: enabled ? "selected-watchlist-ready" : "not-configured",
+    restPolling: enabled ? "fallback-ready" : "not-configured",
+    kis,
     note: enabled
-      ? "Only selected watchlist candidates should be subscribed by the broker adapter."
-      : "Set PRECISION_API_ENABLED=true and configure a broker adapter to replace candidate-only mode."
+      ? "KIS mock/prod adapter is enabled for selected precision-watch candidates only."
+      : "Set KIS_ENABLED=true, PRECISION_API_ENABLED=true, KIS_APP_KEY, KIS_APP_SEC, and KIS_ACCOUNT_NO in .env."
   };
 }
