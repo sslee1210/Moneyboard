@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createServer as createViteServer } from "vite";
 import { getMarketSnapshot, getSectorDetail } from "../server.js";
-import { buildPrecisionWatchlist, getPrecisionWatchAdapterStatus } from "../server-precision-watch.js";
+import { buildPrecisionWatchlist, getKiwoomEnvStatus, getPrecisionWatchAdapterStatus } from "../server-precision-watch.js";
 
 const PORT = Number(process.env.PORT || 4173);
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
@@ -75,6 +75,7 @@ function buildProviderStatus() {
       endpoint: "/api/precision-watchlist",
       adapter
     },
+    kiwoom: adapter.kiwoom,
     kis: adapter.kis
   };
 }
@@ -97,6 +98,18 @@ async function main() {
 
   app.get("/api/provider", (_, response) => {
     response.json(buildProviderStatus());
+  });
+
+  app.get("/api/kiwoom/status", (_, response) => {
+    const status = getKiwoomEnvStatus();
+    response.json({
+      ...status,
+      source: "local-env",
+      bridgeHealthCheck: status.enabled ? "ready-to-check-local-bridge" : "disabled",
+      note: status.enabled
+        ? "Kiwoom environment is configured. Start the local Kiwoom bridge and register selected watchlist candidates."
+        : "Check KIWOOM_ENABLED and KIWOOM_BRIDGE_URL in .env."
+    });
   });
 
   app.get("/api/kis/status", (_, response) => {
