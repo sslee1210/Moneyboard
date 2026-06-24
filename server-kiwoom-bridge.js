@@ -33,10 +33,19 @@ function normalizeCode(value) {
   return match ? match[0] : "";
 }
 
+function unique(items) {
+  return [...new Set(items.filter(Boolean))];
+}
+
 function joinUrl(base, route) {
   const root = String(base || "").replace(/\/+$/, "");
   const suffix = String(route || "").startsWith("/") ? route : `/${route}`;
   return `${root}${suffix}`;
+}
+
+function withCodesQuery(route, codes) {
+  if (!codes.length || route.includes("?")) return route;
+  return `${route}?codes=${encodeURIComponent(codes.join(","))}`;
 }
 
 function authHeaders(extra = {}) {
@@ -75,15 +84,30 @@ async function fetchBridgeJson(route, options = {}) {
   }
 }
 
-function getPathCandidates() {
-  return [
+function getLatestPathCandidates() {
+  return unique([
     process.env.KIWOOM_LATEST_PATH,
     "/latest",
     "/quotes",
     "/api/latest",
     "/api/quotes",
-    process.env.KIWOOM_HEALTH_PATH || "/health"
-  ].filter(Boolean);
+    "/realtime",
+    "/api/realtime",
+    "/snapshot",
+    "/api/snapshot"
+  ]);
+}
+
+function getHealthPath() {
+  return process.env.KIWOOM_HEALTH_PATH || "/health";
+}
+
+function valuesWithCode(object) {
+  if (!object || typeof object !== "object" || Array.isArray(object)) return [];
+  return Object.entries(object).map(([key, value]) => {
+    if (value && typeof value === "object" && !Array.isArray(value)) return { code: key, ...value };
+    return { code: key, value };
+  });
 }
 
 function unwrapQuoteContainer(payload) {
@@ -94,11 +118,20 @@ function unwrapQuoteContainer(payload) {
   if (Array.isArray(payload.items)) return payload.items;
   if (Array.isArray(payload.data)) return payload.data;
   if (Array.isArray(payload.stocks)) return payload.stocks;
-  if (payload.latest && typeof payload.latest === "object") return Object.values(payload.latest);
-  if (payload.quotes && typeof payload.quotes === "object") return Object.values(payload.quotes);
-  if (payload.byCode && typeof payload.byCode === "object") return Object.values(payload.byCode);
-  if (payload.data && typeof payload.data === "object") return Object.values(payload.data);
-  return [];
+
+  const keyed = [
+    ...valuesWithCode(payload.latest),
+    ...valuesWithCode(payload.quotes),
+    ...valuesWithCode(payload.byCode),
+    ...valuesWithCode(payload.data),
+    ...valuesWithCode(payload.stocks),
+    ...valuesWithCode(payload.latestByCode),
+    ...valuesWithCode(payload.quoteByCode)
+  ];
+  if (keyed.length) return keyed;
+
+  const direct = valuesWithCode(payload);
+  return direct.some((item) => normalizeCode(item.code)) ? direct : [];
 }
 
 function pickFirst(record, keys) {
@@ -108,13 +141,22 @@ function pickFirst(record, keys) {
   return undefined;
 }
 
+function flattenRecord(record) {
+  if (!record || typeof record !== "object") return record;
+  return {
+    ...record,
+    ...(record.fids && typeof record.fids === "object" ? record.fids : {}),
+    ...(record.realData && typeof record.realData === "object" ? record.realData : {}),
+    ...(record.data && typeof record.data === "object" && !Array.isArray(record.data) ? record.data : {})
+  };
+}
+
 function normalizeTradeAmountMillion(rawValue, price, volume) {
   const raw = toFiniteNumber(rawValue, 0);
   const computed = price > 0 && volume > 0 ? Math.round((price * volume) / 1_000_000) : 0;
 
   if (raw <= 0) return computed;
 
-  // Kiwoom bridges differ: some send KRW, some send thousand/million KRW.
   const candidates = [raw, raw / 1_000, raw / 1_000_000, raw * 1_000, raw * 10_000]
     .filter((value) => Number.isFinite(value) && value > 0)
     .map((value) => Math.round(value));
@@ -124,7 +166,8 @@ function normalizeTradeAmountMillion(rawValue, price, volume) {
   return candidates.sort((left, right) => Math.abs(left - computed) - Math.abs(right - computed))[0] || computed;
 }
 
-function normalizeQuote(record) {
+function normalizeQuote(input) {
+  const record = flattenRecord(input);
   const code = normalizeCode(pickFirst(record, ["code", "stockCode", "symbol", "종목코드", "9001", "9001_code"]));
   if (!code) return null;
 
@@ -141,7 +184,6 @@ function normalizeQuote(record) {
     "14",
     "fid14"
   ]);
-  const tradeAmountMillion = normalizeTradeAmountMillion(rawTradeAmount, price, volume);
   const changeRate = toFiniteNumber(pickFirst(record, ["changeRate", "rate", "등락률", "12", "fid12"]), 0);
 
   return {
@@ -149,7 +191,7 @@ function normalizeQuote(record) {
     name: compactText(pickFirst(record, ["name", "stockName", "종목명"])) || null,
     price,
     volume,
-    tradeAmountMillion,
+    tradeAmountMillion: normalizeTradeAmountMillion(rawTradeAmount, price, volume),
     changeRate,
     direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
     provider: "Kiwoom OpenAPI+ bridge",
@@ -161,7 +203,8 @@ function normalizeQuote(record) {
 function normalizeQuotes(payload) {
   const quotes = unwrapQuoteContainer(payload)
     .map(normalizeQuote)
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((quote) => quote.price > 0 || quote.volume > 0 || quote.tradeAmountMillion > 0);
   return new Map(quotes.map((quote) => [quote.code, quote]));
 }
 
@@ -176,7 +219,8 @@ export function getKiwoomBridgeRuntimeStatus(extra = {}) {
     bridgeUrl: bridgeUrl || "not-configured",
     pollCacheMs: KIWOOM_POLL_CACHE_MS,
     registerCacheMs: KIWOOM_REGISTER_CACHE_MS,
-    latestPathCandidates: getPathCandidates(),
+    latestPathCandidates: getLatestPathCandidates(),
+    healthPath: getHealthPath(),
     ...extra
   };
 }
@@ -185,7 +229,7 @@ async function registerWatchlist(candidates) {
   const status = getKiwoomBridgeRuntimeStatus();
   if (!status.enabled) return { ...status, registered: false, reason: "disabled" };
 
-  const codes = [...new Set((candidates || []).map((item) => normalizeCode(item.code)).filter(Boolean))].slice(
+  const codes = unique((candidates || []).map((item) => normalizeCode(item.code))).slice(
     0,
     Number(process.env.KIWOOM_WATCH_LIMIT || process.env.PRECISION_WATCH_LIMIT || 40)
   );
@@ -234,11 +278,19 @@ async function registerWatchlist(candidates) {
   return registerCache.promise;
 }
 
+async function readHealth() {
+  try {
+    return await fetchBridgeJson(getHealthPath());
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
 async function loadLatestQuotes(candidates) {
   const status = getKiwoomBridgeRuntimeStatus();
   if (!status.enabled) return { quotesByCode: new Map(), status };
 
-  const codes = [...new Set((candidates || []).map((item) => normalizeCode(item.code)).filter(Boolean))];
+  const codes = unique((candidates || []).map((item) => normalizeCode(item.code)));
   const key = codes.join(",");
   if (latestCache.key === key && latestCache.expiresAt > Date.now() && latestCache.status) {
     return { quotesByCode: latestCache.data, status: latestCache.status };
@@ -248,128 +300,100 @@ async function loadLatestQuotes(candidates) {
   latestCache.key = key;
   latestCache.promise = (async () => {
     const registerStatus = await registerWatchlist(candidates);
-    let lastError = null;
+    const attempts = [];
 
-    for (const route of getPathCandidates()) {
-      try {
-        const payload = await fetchBridgeJson(route);
-        const quotesByCode = normalizeQuotes(payload);
-        const nextStatus = {
-          ...status,
-          ...registerStatus,
-          latestPath: route,
-          latestCount: quotesByCode.size,
-          quoteCodes: [...quotesByCode.keys()],
-          updatedAt: new Date().toISOString()
-        };
-        latestCache.data = quotesByCode;
-        latestCache.status = nextStatus;
-        latestCache.expiresAt = Date.now() + KIWOOM_POLL_CACHE_MS;
-        latestCache.promise = null;
-        return { quotesByCode, status: nextStatus };
-      } catch (error) {
-        lastError = error;
+    for (const baseRoute of getLatestPathCandidates()) {
+      for (const route of unique([baseRoute, withCodesQuery(baseRoute, codes)])) {
+        try {
+          const payload = await fetchBridgeJson(route);
+          const quotesByCode = normalizeQuotes(payload);
+          attempts.push({ route, ok: true, quoteCount: quotesByCode.size });
+
+          if (quotesByCode.size > 0) {
+            const nextStatus = {
+              ...status,
+              ...registerStatus,
+              latestPath: route,
+              latestCount: quotesByCode.size,
+              quoteCodes: [...quotesByCode.keys()],
+              attempts,
+              updatedAt: new Date().toISOString()
+            };
+            latestCache.data = quotesByCode;
+            latestCache.status = nextStatus;
+            latestCache.expiresAt = Date.now() + KIWOOM_POLL_CACHE_MS;
+            latestCache.promise = null;
+            return { quotesByCode, status: nextStatus };
+          }
+        } catch (error) {
+          attempts.push({ route, ok: false, error: error.message });
+        }
       }
     }
 
-    const errorStatus = {
+    const health = await readHealth();
+    const nextStatus = {
       ...status,
       ...registerStatus,
+      latestPath: null,
       latestCount: 0,
-      error: lastError?.message || "No Kiwoom latest quote endpoint responded",
+      quoteCodes: [],
+      attempts,
+      health,
+      error: "No Kiwoom latest quote endpoint returned usable quote data.",
       updatedAt: new Date().toISOString()
     };
     latestCache.data = new Map();
-    latestCache.status = errorStatus;
-    latestCache.expiresAt = Date.now() + Math.min(KIWOOM_POLL_CACHE_MS, 1000);
+    latestCache.status = nextStatus;
+    latestCache.expiresAt = Date.now() + KIWOOM_POLL_CACHE_MS;
     latestCache.promise = null;
-    return { quotesByCode: latestCache.data, status: errorStatus };
+    return { quotesByCode: new Map(), status: nextStatus };
   })();
 
   return latestCache.promise;
 }
 
-function mergeQuoteIntoStock(stock, quote) {
-  if (!quote) return stock;
-  const next = { ...stock };
-  if (quote.name) next.name = quote.name;
-  if (quote.price > 0) next.price = quote.price;
-  if (quote.volume > 0) next.volume = quote.volume;
-  if (quote.tradeAmountMillion > 0) next.tradeAmountMillion = quote.tradeAmountMillion;
-  if (Number.isFinite(quote.changeRate)) next.changeRate = quote.changeRate;
-  next.direction = quote.direction || next.direction;
-  next.provider = quote.provider;
-  next.live = true;
-  next.liveUpdatedAt = quote.liveUpdatedAt;
-  return next;
-}
-
-function recalculateSector(sector) {
-  const stocks = [...(sector.stocks || [])].sort((left, right) => (right.tradeAmountMillion || 0) - (left.tradeAmountMillion || 0));
-  const topStocks = stocks.slice(0, 8);
-  const tradingValueMillion = stocks.reduce((sum, stock) => sum + (stock.tradeAmountMillion || 0), 0);
-  const volume = stocks.reduce((sum, stock) => sum + (stock.volume || 0), 0);
-  const weightedChangeRate = tradingValueMillion > 0
-    ? stocks.reduce((sum, stock) => sum + (stock.changeRate || 0) * (stock.tradeAmountMillion || 0), 0) / tradingValueMillion
-    : sector.weightedChangeRate || sector.changeRate || 0;
-  const topStock = topStocks[0] || null;
-
-  return {
-    ...sector,
-    stocks,
-    topStocks,
-    topStockName: topStock?.name || null,
-    topStockCode: topStock?.code || null,
-    tradingValueMillion,
-    volume,
-    weightedChangeRate
-  };
-}
-
-export async function enrichSnapshotWithKiwoom(snapshot, watchlist) {
-  const candidates = watchlist?.candidates || [];
+export async function enrichSnapshotWithKiwoom(snapshot, precisionWatchlist = snapshot?.precisionWatchlist) {
+  const candidates = precisionWatchlist?.candidates || [];
   const { quotesByCode, status } = await loadLatestQuotes(candidates);
-  if (!quotesByCode.size) {
+
+  const nextCandidates = candidates.map((candidate) => {
+    const quote = quotesByCode.get(candidate.code);
+    if (!quote) return candidate;
     return {
-      snapshot: {
-        ...snapshot,
-        precisionWatchlist: {
-          ...watchlist,
-          adapter: { ...(watchlist?.adapter || {}), kiwoomBridge: status }
-        }
-      },
-      status
+      ...candidate,
+      name: quote.name || candidate.name,
+      price: quote.price || candidate.price,
+      volume: quote.volume || candidate.volume,
+      tradeAmountMillion: quote.tradeAmountMillion || candidate.tradeAmountMillion,
+      changeRate: Number.isFinite(quote.changeRate) ? quote.changeRate : candidate.changeRate,
+      direction: quote.direction || candidate.direction,
+      provider: quote.provider,
+      live: true,
+      liveUpdatedAt: quote.liveUpdatedAt
     };
-  }
+  });
 
-  const sectors = (snapshot.sectors || []).map((sector) => {
-    const stocks = (sector.stocks || sector.topStocks || []).map((stock) => mergeQuoteIntoStock(stock, quotesByCode.get(stock.code)));
-    return recalculateSector({ ...sector, stocks });
-  }).sort((left, right) => (right.tradingValueMillion || 0) - (left.tradingValueMillion || 0));
-
-  const totals = {
-    ...(snapshot.totals || {}),
-    tradingValueMillion: sectors.reduce((sum, sector) => sum + (sector.tradingValueMillion || 0), 0),
-    volume: sectors.reduce((sum, sector) => sum + (sector.volume || 0), 0)
+  const liveQuoteCount = nextCandidates.filter((candidate) => candidate.live).length;
+  const nextWatchlist = {
+    ...precisionWatchlist,
+    updatedAt: new Date().toISOString(),
+    precisionProvider: liveQuoteCount > 0 ? "kiwoom-bridge-live" : "kiwoom-adapter-pending",
+    liveQuoteCount,
+    candidates: nextCandidates,
+    adapter: {
+      ...(precisionWatchlist?.adapter || {}),
+      kiwoomBridge: status
+    }
   };
-
-  const liveCandidates = (watchlist?.candidates || []).map((candidate) => mergeQuoteIntoStock(candidate, quotesByCode.get(candidate.code)));
 
   return {
     snapshot: {
       ...snapshot,
-      updatedAt: new Date().toISOString(),
-      provider: quotesByCode.size ? "Naver Finance + Kiwoom OpenAPI+ bridge" : snapshot.provider,
-      totals,
-      sectors,
-      precisionWatchlist: {
-        ...watchlist,
-        precisionProvider: "kiwoom-bridge",
-        liveQuoteCount: quotesByCode.size,
-        candidates: liveCandidates,
-        adapter: { ...(watchlist?.adapter || {}), kiwoomBridge: status }
-      }
+      provider: liveQuoteCount > 0 ? "Kiwoom OpenAPI+ bridge + Naver Finance" : snapshot?.provider,
+      precisionWatchlist: nextWatchlist
     },
+    quotesByCode,
     status
   };
 }
