@@ -1,0 +1,195 @@
+/* Right panel terminology cleanup.
+   The panel has only two concepts:
+   1) 키움 실시간 감시 40종목 = watch pool, not a buy signal.
+   2) 수급 포착 종목 = actual short-term trading-value inflow detected from the pool. */
+
+.flow-alert-panel {
+  --intent-green: #166534;
+  --intent-green-soft: #dcfce7;
+  --intent-red: #dc2626;
+  --intent-slate: #0f172a;
+}
+
+.flow-alert-header .eyebrow {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.flow-alert-header .eyebrow::after {
+  color: #166534;
+  content: "키움 실시간 수급 감시";
+  font-size: 12px;
+  font-weight: 1000;
+  letter-spacing: 0.08em;
+}
+
+.flow-alert-header h2 {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.flow-alert-header h2::after {
+  display: block;
+  color: #0f172a;
+  content: "단기 거래대금 포착";
+  font-size: 28px;
+  font-weight: 1000;
+  letter-spacing: -0.055em;
+  line-height: 1.08;
+}
+
+.flow-alert-header strong::before {
+  content: "포착 ";
+  font-size: 10px;
+  font-weight: 900;
+  opacity: 0.82;
+}
+
+.flow-alert-panel:not(.is-kiwoom-live) .kiwoom-status-label {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.flow-alert-panel:not(.is-kiwoom-live) .kiwoom-status-label::after {
+  color: #92400e;
+  content: "키움 실시간 연결 확인 중";
+  font-size: 16px;
+  font-weight: 1000;
+  letter-spacing: -0.03em;
+}
+
+.kiwoom-status-card small {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.kiwoom-status-card small::after {
+  display: block;
+  color: #52635b;
+  content: "네이버가 감시 후보 40개를 뽑고, 키움이 실시간 체결·거래대금을 추적합니다.";
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.flow-alert-rule::after {
+  content: "판단 기준: 감시 40종목 중 1분·3분 안에 거래대금이 10억 이상 새로 증가하면 ‘수급 포착 종목’으로 표시합니다. 매수 확정 신호가 아니라 차트와 호가를 먼저 확인할 우선순위입니다." !important;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > span::after {
+  content: "수급 포착 종목" !important;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > small::after {
+  content: "실제 10억+ 유입" !important;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title::after {
+  display: block;
+  margin-top: 7px;
+  color: #64748b;
+  content: "감시 40종목 중 단기 거래대금이 실제로 터진 종목입니다. 반복 포착될수록 당일 수급 집중 가능성이 큽니다.";
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.precision-watch-section .side-section-title > span::after {
+  content: "키움 실시간 감시 40종목" !important;
+}
+
+.precision-watch-section .side-section-title > small::after {
+  content: "감시 풀 · 매수신호 아님" !important;
+}
+
+.precision-watch-section .side-section-title::after {
+  display: block;
+  margin-top: 7px;
+  color: #64748b;
+  content: "네이버 섹터·거래대금 기준으로 선별된 후보를 키움 API에 등록해 실시간 체결값을 받는 목록입니다.";
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.flow-alert-empty strong {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.flow-alert-empty strong::after {
+  color: #0f172a;
+  content: "포착 대기";
+  font-size: 14px;
+  font-weight: 1000;
+}
+
+.flow-alert-empty span {
+  color: transparent !important;
+  font-size: 0 !important;
+}
+
+.flow-alert-empty span::after {
+  color: #64748b;
+  content: "키움 감시 40종목 중 1분·3분 10억 이상 거래대금 유입이 생기면 여기에 표시됩니다.";
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.5;
+}
+
+.precision-watch-section .flow-alert-empty strong::after {
+  content: "감시 대상 계산 중";
+}
+
+.precision-watch-section .flow-alert-empty span::after {
+  content: "상위 섹터와 거래대금 기준으로 감시 40종목을 계산하고 키움 API에 등록합니다.";
+}
+
+.flow-alert-item::before {
+  align-self: start;
+  justify-self: start;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  content: "수급 포착";
+  font-size: 10px;
+  font-weight: 1000;
+  letter-spacing: 0.02em;
+}
+
+.precision-candidate::before {
+  align-self: center;
+  justify-self: start;
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #475569;
+  content: "감시";
+  font-size: 9px;
+  font-weight: 1000;
+}
+
+.precision-candidate.is-live::before {
+  background: #dcfce7;
+  color: #166534;
+  content: "LIVE";
+}
+
+.precision-candidate {
+  grid-template-columns: 38px minmax(0, 1fr) 108px !important;
+}
+
+@media (max-width: 1380px) {
+  .flow-alert-header h2::after {
+    font-size: 24px;
+  }
+
+  .precision-watch-section .side-section-title > span::after {
+    font-size: 15px;
+  }
+
+  .precision-candidate {
+    grid-template-columns: 34px minmax(0, 1fr) 96px !important;
+  }
+}
