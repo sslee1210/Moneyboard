@@ -1,0 +1,372 @@
+/* Final decision-focused right panel overrides.
+   Purpose: make Kiwoom live state, repeated flow alerts, and precision watch candidates readable. */
+
+main {
+  width: min(2200px, calc(100vw - 24px));
+}
+
+.monitor-layout {
+  grid-template-columns: minmax(0, 1fr) 520px;
+  align-items: start;
+  gap: 22px;
+}
+
+.flow-alert-panel {
+  position: sticky;
+  top: 14px;
+  max-height: none;
+  overflow: visible;
+  padding-bottom: 16px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 24px;
+  background:
+    radial-gradient(circle at 96% 0%, rgba(22, 101, 52, 0.2), transparent 34%),
+    linear-gradient(180deg, #f8fbf8 0%, #edf5f0 100%);
+  box-shadow: 0 26px 58px rgba(15, 23, 42, 0.16);
+}
+
+.flow-alert-panel.is-kiwoom-live {
+  border-color: rgba(22, 101, 52, 0.38);
+}
+
+.flow-alert-header {
+  padding: 20px 20px 12px;
+}
+
+.flow-alert-header .eyebrow {
+  color: #52635b;
+  font-size: 12px;
+  font-weight: 950;
+  letter-spacing: 0.08em;
+}
+
+.flow-alert-header h2 {
+  margin-top: 4px;
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 1000;
+  letter-spacing: -0.055em;
+}
+
+.flow-alert-header strong {
+  min-width: 50px;
+  height: 50px;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #ffffff;
+  font-size: 17px;
+  font-weight: 1000;
+}
+
+.kiwoom-status-card {
+  margin: 0 16px 13px;
+  padding: 16px 17px;
+  border: 1px solid rgba(22, 101, 52, 0.28);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(236, 253, 245, 0.96));
+  box-shadow: 0 16px 34px rgba(22, 101, 52, 0.12);
+}
+
+.flow-alert-panel.is-kiwoom-live .kiwoom-status-card::before {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 10px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  content: "LIVE";
+  font-size: 10px;
+  font-weight: 1000;
+  letter-spacing: 0.06em;
+}
+
+.kiwoom-status-label {
+  color: #0f5132;
+  font-size: 16px;
+  font-weight: 1000;
+  letter-spacing: -0.03em;
+}
+
+.kiwoom-status-card small {
+  margin-top: 6px;
+  color: #52635b;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.45;
+}
+
+.kiwoom-status-card b {
+  min-width: 58px;
+  height: 58px;
+  border: 5px solid #dff4e8;
+  background: #0f5132;
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 1000;
+}
+
+.flow-alert-rule {
+  margin: 0 16px 14px;
+  padding: 12px 13px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 15px;
+  background: rgba(255, 255, 255, 0.82);
+  color: transparent;
+  font-size: 0;
+}
+
+.flow-alert-rule::after {
+  color: #475569;
+  content: "판단 기준: 1·3분 안에 거래대금이 10억 이상 새로 증가하면 포착. 반복 포착이 많을수록 단기 수급 집중도가 높다는 의미.";
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.55;
+}
+
+.side-section {
+  margin: 0 16px 15px;
+  overflow: visible;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 19px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.07);
+}
+
+.side-section-title {
+  padding: 14px 15px 12px;
+  border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+}
+
+.side-section-title span {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 1000;
+  letter-spacing: -0.035em;
+}
+
+.side-section-title small {
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: #eef6f1;
+  color: #166534;
+  font-size: 10px;
+  font-weight: 1000;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > span {
+  font-size: 0;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > span::after {
+  content: "수급 반복 감지";
+  font-size: 16px;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > small {
+  color: transparent;
+  font-size: 0;
+}
+
+.flow-alert-panel .side-section:not(.precision-watch-section) .side-section-title > small::after {
+  color: #166534;
+  content: "반복 포착 = 수급 지속";
+  font-size: 10px;
+}
+
+.precision-watch-section .side-section-title > span {
+  font-size: 0;
+}
+
+.precision-watch-section .side-section-title > span::after {
+  content: "실시간 감시 대상";
+  font-size: 16px;
+}
+
+.precision-watch-section .side-section-title > small {
+  color: transparent;
+  font-size: 0;
+}
+
+.precision-watch-section .side-section-title > small::after {
+  color: #166534;
+  content: "키움 LIVE 종목";
+  font-size: 10px;
+}
+
+.flow-alert-list,
+.precision-candidate-list {
+  max-height: none !important;
+  min-height: 0;
+  overflow: visible !important;
+  padding: 12px;
+}
+
+.flow-alert-list {
+  display: grid;
+  gap: 10px;
+}
+
+.flow-alert-item {
+  display: grid;
+  gap: 9px;
+  padding: 13px 14px 13px 16px;
+  overflow: visible;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, rgba(254, 242, 242, 0.95), #ffffff 42%);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.055);
+}
+
+.flow-alert-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.flow-alert-name-row strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 17px;
+  font-weight: 1000;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-alert-name-row small,
+.flow-alert-meta span,
+.flow-alert-money span {
+  color: #52635b;
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.flow-alert-money strong {
+  color: #dc2626;
+  font-size: 19px;
+  font-weight: 1000;
+}
+
+.precision-candidate-list {
+  display: grid;
+  gap: 10px;
+}
+
+.precision-candidate {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 102px;
+  gap: 11px;
+  min-height: 70px;
+  padding: 12px 13px;
+  overflow: visible;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 17px;
+  background: #ffffff;
+  box-shadow: 0 9px 19px rgba(15, 23, 42, 0.045);
+}
+
+.precision-candidate.is-live {
+  border-color: rgba(22, 101, 52, 0.28);
+  background:
+    linear-gradient(90deg, rgba(240, 253, 244, 0.96), #ffffff 34%);
+}
+
+.precision-rank {
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  background: #e2e8f0;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 1000;
+}
+
+.precision-candidate.is-live .precision-rank {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.precision-main strong {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 1000;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precision-main small {
+  display: block;
+  overflow: hidden;
+  margin-top: 5px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.precision-candidate.is-live .precision-main small::after {
+  margin-left: 6px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #166534;
+  content: "LIVE";
+  font-size: 9px;
+  font-weight: 1000;
+}
+
+.precision-values {
+  min-width: 96px;
+  justify-items: end;
+}
+
+.precision-values strong {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 1000;
+  white-space: nowrap;
+}
+
+.precision-values span {
+  font-size: 12px;
+  font-weight: 1000;
+  white-space: nowrap;
+}
+
+@media (max-width: 1720px) {
+  main {
+    width: min(1900px, calc(100vw - 20px));
+  }
+
+  .monitor-layout {
+    grid-template-columns: minmax(0, 1fr) 470px;
+  }
+}
+
+@media (max-width: 1380px) {
+  .monitor-layout {
+    grid-template-columns: minmax(0, 1fr) 420px;
+  }
+
+  .precision-candidate {
+    grid-template-columns: 34px minmax(0, 1fr) 88px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .monitor-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-alert-panel {
+    position: static;
+  }
+}
