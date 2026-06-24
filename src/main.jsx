@@ -6,6 +6,7 @@ import "./flow-alerts.css";
 import "./right-panel-compact.css";
 import "./right-panel-trading.css";
 import "./right-panel-decision.css";
+import "./right-panel-responsive.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
