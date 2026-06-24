@@ -36,6 +36,14 @@ function normalizeTradeAmount(value) {
   return Math.log10(tradeAmount + 10) * 22;
 }
 
+function formatTradeAmountTag(tradeAmountMillion) {
+  if (tradeAmountMillion >= 1_000_000) return "거래대금 1조+";
+  if (tradeAmountMillion >= 100_000) return "거래대금 1천억+";
+  if (tradeAmountMillion >= 10_000) return "거래대금 100억+";
+  if (tradeAmountMillion >= 1_000) return "거래대금 10억+";
+  return null;
+}
+
 function normalizeName(value) {
   return String(value || "").replace(/\s+/g, " ").trim().toUpperCase();
 }
@@ -53,11 +61,10 @@ function buildReasonTags(stock, sector, sectorRank) {
   const tags = [];
   const tradeAmountMillion = safeNumber(stock.tradeAmountMillion);
   const changeRate = safeNumber(stock.changeRate);
+  const tradeAmountTag = formatTradeAmountTag(tradeAmountMillion);
 
   if (sectorRank <= 8) tags.push(`섹터 ${sectorRank}위`);
-  if (tradeAmountMillion >= 100_000) tags.push("거래대금 1조+");
-  else if (tradeAmountMillion >= 10_000) tags.push("거래대금 1천억+");
-  else if (tradeAmountMillion >= 1_000) tags.push("거래대금 100억+");
+  if (tradeAmountTag) tags.push(tradeAmountTag);
   if (Math.abs(changeRate) >= 7) tags.push("급등락 7%+");
   if (stock.direction === "up") tags.push("상승 흐름");
   if (stock.direction === "down") tags.push("하락 압력");
@@ -217,10 +224,7 @@ export function getPrecisionWatchAdapterStatus() {
   const provider = normalizedProvider();
   const requestedEnabled = process.env.PRECISION_API_ENABLED === "true";
   const market = process.env.PRECISION_MARKET_SCOPE || "KRX_SELECTED";
-  const enabled = requestedEnabled && (
-    (provider === "kiwoom" && kiwoom.enabled) ||
-    (provider === "kis" && kis.enabled)
-  );
+  const enabled = requestedEnabled && ((provider === "kiwoom" && kiwoom.enabled) || (provider === "kis" && kis.enabled));
 
   return {
     enabled,
