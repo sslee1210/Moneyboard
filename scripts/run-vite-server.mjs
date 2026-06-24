@@ -1,20 +1,93 @@
+import "dotenv/config";
 import express from "express";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createServer as createViteServer } from "vite";
 import { getMarketSnapshot, getSectorDetail } from "../server.js";
 import { buildPrecisionWatchlist, getKiwoomEnvStatus, getPrecisionWatchAdapterStatus } from "../server-precision-watch.js";
+import { enrichSnapshotWithKiwoom, getKiwoomBridgeRuntimeStatus } from "../server-kiwoom-bridge.js";
 
 const PORT = Number(process.env.PORT || 4173);
 const MARKET_CACHE_MS = Number(process.env.MARKET_CACHE_MS || 30_000);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
 
-function withPrecisionWatchlist(snapshot) {
+function mergePrecisionQuotesIntoSectors(snapshot, precisionWatchlist) {
+  const liveByCode = new Map(
+    (precisionWatchlist?.candidates || [])
+      .filter((candidate) => candidate?.code && candidate.live)
+      .map((candidate) => [candidate.code, candidate])
+  );
+
+  if (!liveByCode.size) return snapshot.sectors || [];
+
+  return (snapshot.sectors || []).map((sector) => {
+    const topStocks = (sector.topStocks || []).map((stock) => {
+      const live = liveByCode.get(stock.code);
+      if (!live) return stock;
+      return {
+        ...stock,
+        price: live.price || stock.price,
+        volume: live.volume || stock.volume,
+        tradeAmountMillion: live.tradeAmountMillion || stock.tradeAmountMillion,
+        changeRate: Number.isFinite(live.changeRate) ? live.changeRate : stock.changeRate,
+        direction: live.direction || stock.direction,
+        provider: live.provider || stock.provider,
+        live: true,
+        liveUpdatedAt: live.liveUpdatedAt
+      };
+    });
+
+    const topStock = topStocks[0] || null;
+    return {
+      ...sector,
+      topStocks,
+      topStockName: topStock?.name || sector.topStockName || null,
+      topStockCode: topStock?.code || sector.topStockCode || null
+    };
+  });
+}
+
+async function withPrecisionWatchlist(snapshot) {
   const precisionWatchlist = buildPrecisionWatchlist(snapshot);
-  return {
+  const bridgeStatus = getKiwoomBridgeRuntimeStatus();
+  const base = {
     ...snapshot,
-    precisionWatchlist
+    precisionWatchlist: {
+      ...precisionWatchlist,
+      adapter: {
+        ...(precisionWatchlist.adapter || {}),
+        kiwoomBridge: bridgeStatus
+      }
+    }
   };
+
+  if (!bridgeStatus.enabled) return base;
+
+  try {
+    const enriched = await enrichSnapshotWithKiwoom(base, precisionWatchlist);
+    const liveWatchlist = enriched.snapshot?.precisionWatchlist || base.precisionWatchlist;
+    return {
+      ...base,
+      provider: enriched.snapshot?.provider || base.provider,
+      sectors: mergePrecisionQuotesIntoSectors(base, liveWatchlist),
+      precisionWatchlist: liveWatchlist
+    };
+  } catch (error) {
+    return {
+      ...base,
+      precisionWatchlist: {
+        ...base.precisionWatchlist,
+        adapter: {
+          ...(base.precisionWatchlist.adapter || {}),
+          kiwoomBridge: {
+            ...bridgeStatus,
+            error: error.message,
+            updatedAt: new Date().toISOString()
+          }
+        }
+      }
+    };
+  }
 }
 
 function buildVolumeProfile(stocks, limit = VOLUME_HISTORY_LIMIT) {
@@ -73,9 +146,15 @@ function buildProviderStatus() {
       broadScan: "Naver Finance all-sector scan",
       selectedUniverse: "top-ranked candidates only",
       endpoint: "/api/precision-watchlist",
-      adapter
+      adapter: {
+        ...adapter,
+        kiwoomBridge: getKiwoomBridgeRuntimeStatus()
+      }
     },
-    kiwoom: adapter.kiwoom,
+    kiwoom: {
+      ...adapter.kiwoom,
+      bridge: getKiwoomBridgeRuntimeStatus()
+    },
     kis: adapter.kis
   };
 }
@@ -92,6 +171,7 @@ async function main() {
       provider: "Naver Finance",
       overviewProvider: "Yahoo Finance",
       precisionWatch: getPrecisionWatchAdapterStatus(),
+      kiwoomBridge: getKiwoomBridgeRuntimeStatus(),
       now: new Date().toISOString()
     });
   });
@@ -104,6 +184,7 @@ async function main() {
     const status = getKiwoomEnvStatus();
     response.json({
       ...status,
+      bridge: getKiwoomBridgeRuntimeStatus(),
       source: "local-env",
       bridgeHealthCheck: status.enabled ? "ready-to-check-local-bridge" : "disabled",
       note: status.enabled
@@ -126,7 +207,7 @@ async function main() {
   app.get("/api/sectors", async (_, response) => {
     try {
       const snapshot = await getMarketSnapshot();
-      response.json(withPrecisionWatchlist(snapshot));
+      response.json(await withPrecisionWatchlist(snapshot));
     } catch (error) {
       response.status(502).json({ message: "Failed to load market data", error: error.message });
     }
@@ -136,7 +217,7 @@ async function main() {
     try {
       const snapshot = await getMarketSnapshot();
       const limit = Number(request.query.limit || process.env.PRECISION_WATCH_LIMIT || 40);
-      response.json(buildPrecisionWatchlist(snapshot, { limit }));
+      response.json((await withPrecisionWatchlist(snapshot)).precisionWatchlist || buildPrecisionWatchlist(snapshot, { limit }));
     } catch (error) {
       response.status(502).json({ message: "Failed to build precision watchlist", error: error.message });
     }
@@ -172,7 +253,7 @@ async function main() {
 
     const sendSnapshot = async () => {
       try {
-        const payload = withPrecisionWatchlist(await getMarketSnapshot());
+        const payload = await withPrecisionWatchlist(await getMarketSnapshot());
         response.write("event: market\n");
         response.write(`data: ${JSON.stringify(payload)}\n\n`);
       } catch (error) {
