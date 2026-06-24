@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 const fastDefaults = {
   MARKET_CACHE_MS: "3000",
   DETAIL_CACHE_MS: "3000",
