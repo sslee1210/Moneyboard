@@ -137,17 +137,20 @@ async function loadLiveVolumeProfile(stocks, { forceReader = false, limit = volu
 }
 
 function formatTradingValue(millionWon = 0) {
-  if (millionWon >= 100_000) {
-    return `${percentFormatter.format(millionWon / 100_000)}조`;
+  const value = Number(millionWon) || 0;
+  if (value >= 100_000) {
+    return `${percentFormatter.format(value / 100_000)}조`;
   }
-  if (millionWon >= 100) {
-    return `${percentFormatter.format(millionWon / 100)}억`;
+  if (value >= 100) {
+    return `${percentFormatter.format(value / 100)}억`;
   }
-  return `${currencyFormatter.format(Math.round(millionWon || 0))}백만`;
+  return `${currencyFormatter.format(Math.round(value))}백만`;
 }
 
 function formatNumber(value = 0) {
-  return currencyFormatter.format(Math.round(value || 0));
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return "-";
+  return currencyFormatter.format(Math.round(number));
 }
 
 function formatVolume(value) {
@@ -163,7 +166,7 @@ function formatVolume(value) {
 }
 
 function formatPercent(value = 0) {
-  const number = Number.isFinite(value) ? value : 0;
+  const number = Number.isFinite(Number(value)) ? Number(value) : 0;
   const sign = number > 0 ? "+" : "";
   return `${sign}${percentFormatter.format(number)}%`;
 }
@@ -214,9 +217,31 @@ function sparklinePath(points, width = 180, height = 46, padding = 3) {
 }
 
 function changeClass(value = 0) {
-  if (value > 0) return "positive";
-  if (value < 0) return "negative";
+  const number = Number(value) || 0;
+  if (number > 0) return "positive";
+  if (number < 0) return "negative";
   return "neutral";
+}
+
+function normalizeSearchText(value = "") {
+  return String(value)
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[()\[\]{}·.,/_-]/g, "");
+}
+
+function stockSearchText(stock) {
+  return normalizeSearchText(`${stock?.name || ""} ${stock?.code || ""} ${stock?.market || ""} ${stock?.sectorName || ""}`);
+}
+
+function sectorSearchText(sector) {
+  const stockNames = (sector?.topStocks || []).map((stock) => `${stock.name} ${stock.code}`).join(" ");
+  return normalizeSearchText(`${sector?.name || ""} ${stockNames}`);
+}
+
+function stockMatchesQuery(stock, normalizedQuery) {
+  if (!normalizedQuery) return true;
+  return stockSearchText(stock).includes(normalizedQuery);
 }
 
 function shortName(name = "") {
@@ -536,11 +561,15 @@ function MetricCard({ icon: Icon, label, value, detail, tone = "default" }) {
   );
 }
 
-function SectorCard({ sector, selected, maxValue, onSelect }) {
+function SectorCard({ sector, selected, maxValue, onSelect, query }) {
   const tradingValue = sector.tradingValueMillion || 0;
   const width = maxValue ? Math.max(4, (tradingValue / maxValue) * 100) : 0;
-  const topStocks = (sector.topStocks || []).slice(0, 5);
+  const normalizedQuery = normalizeSearchText(query);
+  const allTopStocks = sector.topStocks || [];
+  const matchingStocks = normalizedQuery ? allTopStocks.filter((stock) => stockMatchesQuery(stock, normalizedQuery)) : [];
+  const topStocks = (matchingStocks.length ? matchingStocks : allTopStocks).slice(0, 5);
   const sectorChange = sector.weightedChangeRate ?? sector.changeRate ?? 0;
+  const searchHit = Boolean(normalizedQuery && matchingStocks.length);
 
   const handleKeyDown = (event) => {
     if (event.key === "Enter" || event.key === " ") {
@@ -551,7 +580,7 @@ function SectorCard({ sector, selected, maxValue, onSelect }) {
 
   return (
     <article
-      className={`sector-card-block ${selected ? "is-selected" : ""}`}
+      className={`sector-card-block ${selected ? "is-selected" : ""} ${searchHit ? "is-search-hit" : ""}`}
       role="button"
       tabIndex={0}
       onClick={() => onSelect(sector)}
@@ -561,7 +590,7 @@ function SectorCard({ sector, selected, maxValue, onSelect }) {
         <span className="sector-rank">{sector.rank}</span>
         <div className="sector-title-wrap">
           <strong>{sector.name}</strong>
-          <small>{sector.stockCount}종목 · {sector.topStockName || topStocks[0]?.name || "집계 중"}</small>
+          <small>{sector.stockCount}종목 · {searchHit ? "검색 종목 우선 표시" : sector.topStockName || topStocks[0]?.name || "집계 중"}</small>
         </div>
         <div className="sector-card-values">
           <strong>{formatTradingValue(sector.tradingValueMillion)}</strong>
@@ -572,7 +601,7 @@ function SectorCard({ sector, selected, maxValue, onSelect }) {
       <ol className="sector-stock-list" aria-label={`${sector.name} 상위 종목`}>
         {topStocks.length ? (
           topStocks.map((stock, index) => (
-            <li key={stock.code || `${sector.id}-${stock.name}-${index}`}>
+            <li className={stockMatchesQuery(stock, normalizedQuery) && normalizedQuery ? "is-match" : ""} key={stock.code || `${sector.id}-${stock.name}-${index}`}>
               <span className="stock-chip-rank">{index + 1}</span>
               <span className="stock-chip-name">{stock.name}</span>
               <span className={`stock-chip-change ${changeClass(stock.changeRate)}`}>{formatPercent(stock.changeRate)}</span>
@@ -589,9 +618,25 @@ function SectorCard({ sector, selected, maxValue, onSelect }) {
   );
 }
 
-function FlowAlertPanel({ alerts }) {
+function FlowAlertPanel({ alerts, snapshot }) {
+  const watchlist = snapshot?.precisionWatchlist || {};
+  const candidates = watchlist.candidates || [];
+  const selectedCount = watchlist.selectedCount || candidates.length || 0;
+  const liveQuoteCount = Number(watchlist.liveQuoteCount || candidates.filter((candidate) => candidate.live).length || 0);
+  const liveRatio = selectedCount ? Math.min(100, (liveQuoteCount / selectedCount) * 100) : 0;
+  const provider = String(watchlist.precisionProvider || "").toLowerCase();
+  const kiwoomLive = provider.includes("kiwoom") && liveQuoteCount > 0;
+  const kiwoomConfigured = watchlist.adapter?.kiwoomBridge?.enabled || watchlist.adapter?.kiwoom?.enabled;
+  const statusLabel = kiwoomLive
+    ? `키움 실시간 연결 ${liveQuoteCount}/${selectedCount}`
+    : kiwoomConfigured
+      ? "키움 브릿지 대기"
+      : "키움 연결 필요";
+
+  const topCandidates = candidates.slice(0, 10);
+
   return (
-    <aside className="flow-alert-panel" aria-label="분봉 거래대금 알림">
+    <aside className={`flow-alert-panel ${kiwoomLive ? "is-kiwoom-live" : "is-kiwoom-pending"}`} aria-label="실시간 정밀감시 패널">
       <div className="flow-alert-header">
         <div>
           <span className="eyebrow">실시간 알림</span>
@@ -599,36 +644,81 @@ function FlowAlertPanel({ alerts }) {
         </div>
         <strong>{alerts.length}</strong>
       </div>
-      <p className="flow-alert-rule">1분봉 또는 3분봉 누적 거래대금 증가분이 10억 이상이면 표시</p>
-      <div className="flow-alert-list">
-        {alerts.length ? (
-          alerts.map((alert) => (
-            <a className="flow-alert-item" key={alert.id} href={alert.naverUrl} target="_blank" rel="noreferrer">
-              <div className="flow-alert-topline">
-                <span className="flow-alert-badge">{alert.windowLabel}</span>
-                <time>{formatTime(alert.triggeredAt)}</time>
-              </div>
-              <div className="flow-alert-name-row">
-                <strong>{alert.name}</strong>
-                <small>{alert.code} · {alert.market}</small>
-              </div>
-              <div className="flow-alert-meta">
-                <span>{alert.sectorRank}위 {alert.sectorName}</span>
-                <span className={changeClass(alert.changeRate)}>{formatPercent(alert.changeRate)}</span>
-              </div>
-              <div className="flow-alert-money">
-                <strong>+{formatTradingValue(alert.deltaMillion)}</strong>
-                <span>{alert.elapsedSeconds}초 누적</span>
-              </div>
-            </a>
-          ))
-        ) : (
-          <div className="flow-alert-empty">
-            <strong>감시 중</strong>
-            <span>10억 이상 유입 종목이 발생하면 여기에 쌓입니다.</span>
-          </div>
-        )}
+
+      <div className="kiwoom-status-card">
+        <div>
+          <span className="kiwoom-status-label">{statusLabel}</span>
+          <small>네이버 후보 선정 → 키움 실시간 체결값 반영</small>
+        </div>
+        <b>{Math.round(liveRatio)}%</b>
       </div>
+
+      <p className="flow-alert-rule">1분봉 또는 3분봉 누적 거래대금 증가분이 10억 이상이면 표시</p>
+
+      <section className="side-section">
+        <div className="side-section-title">
+          <span>종목별 감지 횟수</span>
+          <small>현재 세션 · {new Set(alerts.map((alert) => alert.code)).size}종목</small>
+        </div>
+        <div className="flow-alert-list">
+          {alerts.length ? (
+            alerts.map((alert) => (
+              <a className="flow-alert-item" key={alert.id} href={alert.naverUrl} target="_blank" rel="noreferrer">
+                <div className="flow-alert-topline">
+                  <span className="flow-alert-badge">{alert.windowLabel}</span>
+                  <time>{formatTime(alert.triggeredAt)}</time>
+                </div>
+                <div className="flow-alert-name-row">
+                  <strong>{alert.name}</strong>
+                  <small>{alert.code} · {alert.market}</small>
+                </div>
+                <div className="flow-alert-meta">
+                  <span>{alert.sectorRank}위 {alert.sectorName}</span>
+                  <span className={changeClass(alert.changeRate)}>{formatPercent(alert.changeRate)}</span>
+                </div>
+                <div className="flow-alert-money">
+                  <strong>+{formatTradingValue(alert.deltaMillion)}</strong>
+                  <span>{alert.elapsedSeconds}초 누적</span>
+                </div>
+              </a>
+            ))
+          ) : (
+            <div className="flow-alert-empty">
+              <strong>감시 중</strong>
+              <span>10억 이상 유입 종목이 발생하면 여기에 쌓입니다.</span>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="side-section precision-watch-section">
+        <div className="side-section-title">
+          <span>정밀감시 후보</span>
+          <small>{kiwoomLive ? "kiwoom LIVE" : "네이버 후보"}</small>
+        </div>
+        <div className="precision-candidate-list">
+          {topCandidates.length ? (
+            topCandidates.map((candidate) => (
+              <a className={`precision-candidate ${candidate.live ? "is-live" : ""}`} key={candidate.code} href={candidate.naverUrl} target="_blank" rel="noreferrer">
+                <span className="precision-rank">{candidate.watchRank}</span>
+                <div className="precision-main">
+                  <strong>{candidate.name}</strong>
+                  <small>{candidate.code} · {candidate.market} · {candidate.sectorName}</small>
+                </div>
+                <div className="precision-values">
+                  <strong>{formatTradingValue(candidate.tradeAmountMillion)}</strong>
+                  <span className={changeClass(candidate.changeRate)}>{formatPercent(candidate.changeRate)}</span>
+                </div>
+              </a>
+            ))
+          ) : (
+            <div className="flow-alert-empty">
+              <strong>후보 대기</strong>
+              <span>상위 후보가 계산되면 여기에 표시됩니다.</span>
+            </div>
+          )}
+        </div>
+      </section>
     </aside>
   );
 }
@@ -698,7 +788,7 @@ function StockTable({ stocks, volumeProfile }) {
                   <a href={stock.naverUrl} target="_blank" rel="noreferrer">
                     {stock.name}
                   </a>
-                  <span>{stock.code} · {stock.market}</span>
+                  <span>{stock.code} · {stock.market}{stock.live ? " · kiwoom LIVE" : ""}</span>
                 </td>
                 <td>{formatNumber(stock.price)}</td>
                 <td className={changeClass(stock.changeRate)}>{formatPercent(stock.changeRate)}</td>
@@ -722,16 +812,22 @@ function SectorDetail({
   volumePeriod,
   onVolumePeriodChange,
   volumeProfile,
-  volumeLoading
+  volumeLoading,
+  query
 }) {
-  const stocks = detail?.stocks || sector?.topStocks || [];
+  const normalizedQuery = normalizeSearchText(query);
+  const rawStocks = detail?.stocks || sector?.topStocks || [];
+  const stocks = normalizedQuery
+    ? rawStocks.filter((stock) => stockMatchesQuery({ ...stock, sectorName: sector?.name }, normalizedQuery))
+    : rawStocks;
+  const displayStocks = stocks.length ? stocks : rawStocks;
   const periodLabel = volumePeriodLabels[volumePeriod] || "일일";
-  const sampleSize = volumeProfile?.sampleSize || Math.min(stocks.length, volumeHistoryLimit);
-  const hasSelectedVolume = stocks.length > 0 && (volumePeriod === "day" || (volumeProfile?.counts?.[volumePeriod] || 0) > 0);
+  const sampleSize = volumeProfile?.sampleSize || Math.min(displayStocks.length, volumeHistoryLimit);
+  const hasSelectedVolume = displayStocks.length > 0 && (volumePeriod === "day" || (volumeProfile?.counts?.[volumePeriod] || 0) > 0);
   const selectedVolumeTotal =
     volumeProfile?.totals?.[volumePeriod] ??
-    stocks.slice(0, sampleSize).reduce((sum, stock) => sum + (stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0), 0);
-  const chartData = stocks
+    displayStocks.slice(0, sampleSize).reduce((sum, stock) => sum + (stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0), 0);
+  const chartData = displayStocks
     .map((stock) => ({
       name: shortName(stock.name),
       거래량: stockPeriodVolume(stock, volumeProfile, volumePeriod) || 0,
@@ -808,7 +904,7 @@ function SectorDetail({
         </ResponsiveContainer>
       </div>
 
-      <StockTable stocks={stocks} volumeProfile={volumeProfile} />
+      <StockTable stocks={displayStocks} volumeProfile={volumeProfile} />
     </section>
   );
 }
@@ -829,18 +925,14 @@ export default function App() {
     return (snapshot?.sectors || []).map((sector, index) => ({ ...sector, rank: index + 1 }));
   }, [snapshot]);
 
-  const defaultSector = rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
-  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
-
   const filteredSectors = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
+    const keyword = normalizeSearchText(query);
     if (!keyword) return rankedSectors;
-    return rankedSectors.filter((sector) => {
-      const stockNames = (sector.topStocks || []).map((stock) => stock.name).join(" ");
-      return `${sector.name} ${stockNames}`.toLowerCase().includes(keyword);
-    });
+    return rankedSectors.filter((sector) => sectorSearchText(sector).includes(keyword));
   }, [rankedSectors, query]);
 
+  const defaultSector = filteredSectors.find((sector) => sector.name !== "기타") || rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0];
+  const selectedSector = rankedSectors.find((sector) => sector.id === selectedId) || defaultSector;
   const maxTradingValue = rankedSectors[0]?.tradingValueMillion || 0;
   const volumeProfileKey = useMemo(() => {
     return (sectorDetail?.stocks || []).slice(0, volumeHistoryLimit).map((stock) => stock.code).join(",");
@@ -853,12 +945,17 @@ export default function App() {
 
   useEffect(() => {
     const topSectorId = (rankedSectors.find((sector) => sector.name !== "기타") || rankedSectors[0])?.id;
-    const shouldFollowLiveTop = !manualSelection && snapshot?.mode === "pages-reader-live";
 
-    if (topSectorId && (!selectedId || (shouldFollowLiveTop && selectedId !== topSectorId))) {
+    if (topSectorId && !selectedId) {
       setSelectedId(topSectorId);
     }
-  }, [manualSelection, rankedSectors, selectedId, snapshot?.mode]);
+  }, [rankedSectors, selectedId]);
+
+  useEffect(() => {
+    if (!query.trim() || !filteredSectors.length) return;
+    if (manualSelection && selectedSector && filteredSectors.some((sector) => sector.id === selectedSector.id)) return;
+    setSelectedId(filteredSectors[0].id);
+  }, [filteredSectors, manualSelection, query, selectedSector]);
 
   useEffect(() => {
     if (!selectedSector?.id) return;
@@ -935,6 +1032,7 @@ export default function App() {
 
   const breadth = snapshot?.totals?.breadth || { rising: 0, flat: 0, falling: 0 };
   const updatedTime = formatTime(snapshot?.updatedAt);
+  const excludedProductCount = snapshot?.totals?.excludedProductCount || snapshot?.precisionWatchlist?.excludedProductCount || 0;
 
   return (
     <main>
@@ -967,7 +1065,7 @@ export default function App() {
           icon={Database}
           label="시장 거래대금"
           value={formatTradingValue(snapshot?.totals?.tradingValueMillion)}
-          detail={`${snapshot?.totals?.sectorCount || 0}개 섹터 합산`}
+          detail={`${snapshot?.totals?.sectorCount || 0}개 섹터 합산 · ETF ${excludedProductCount}개 제외`}
           tone="green"
         />
         <MetricCard
@@ -997,7 +1095,14 @@ export default function App() {
               </div>
               <div className="search-box">
                 <Search size={16} />
-                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="섹터/종목 검색" />
+                <input
+                  value={query}
+                  onChange={(event) => {
+                    setManualSelection(false);
+                    setQuery(event.target.value);
+                  }}
+                  placeholder="섹터/종목/코드 검색"
+                />
               </div>
             </div>
             <div className="sector-grid">
@@ -1007,13 +1112,14 @@ export default function App() {
                   sector={sector}
                   selected={sector.id === selectedSector?.id}
                   maxValue={maxTradingValue}
+                  query={query}
                   onSelect={(nextSector) => {
                     setManualSelection(true);
                     setSelectedId(nextSector.id);
                   }}
                 />
               ))}
-              {!filteredSectors.length && <div className="empty-sector-card">검색된 섹터가 없습니다.</div>}
+              {!filteredSectors.length && <div className="empty-sector-card">검색된 섹터/종목이 없습니다.</div>}
             </div>
           </section>
 
@@ -1046,15 +1152,16 @@ export default function App() {
               onVolumePeriodChange={setVolumePeriod}
               volumeProfile={volumeProfile}
               volumeLoading={volumeLoading}
+              query={query}
             />
           </section>
         </section>
 
-        <FlowAlertPanel alerts={flowAlerts} />
+        <FlowAlertPanel alerts={flowAlerts} snapshot={snapshot} />
       </section>
 
       <footer>
-        데이터는 네이버 금융 업종별 시세를 기반으로 자동 집계하며, 국내 증시 기본 데이터 제공처는 KRX로 표시됩니다.
+        데이터는 네이버 금융 업종별 시세를 기반으로 후보를 선정하고, 정밀감시 후보는 키움 OpenAPI+ 로컬 브릿지의 실시간 체결값을 우선 반영합니다.
         투자 판단 전 원천 데이터를 확인하세요.
       </footer>
     </main>
