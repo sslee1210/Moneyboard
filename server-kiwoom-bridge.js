@@ -11,6 +11,17 @@ function boolEnv(name, fallback = false) {
   return ["1", "true", "yes", "on"].includes(value);
 }
 
+function numberEnv(names, fallback) {
+  const keys = Array.isArray(names) ? names : [names];
+  for (const key of keys) {
+    const value = process.env[key];
+    if (value === undefined || value === null || String(value).trim() === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
+  }
+  return fallback;
+}
+
 function compactText(value) {
   return String(value || "").replace(/\s+/g, " ").trim();
 }
@@ -113,11 +124,11 @@ function valuesWithCode(object) {
 function unwrapQuoteContainer(payload) {
   if (!payload) return [];
   if (Array.isArray(payload)) return payload;
-  if (Array.isArray(payload.latest)) return payload.latest;
-  if (Array.isArray(payload.quotes)) return payload.quotes;
-  if (Array.isArray(payload.items)) return payload.items;
-  if (Array.isArray(payload.data)) return payload.data;
-  if (Array.isArray(payload.stocks)) return payload.stocks;
+  if (Array.isArray(payload.latest)) return payload;
+  if (Array.isArray(payload.quotes)) return payload;
+  if (Array.isArray(payload.items)) return payload;
+  if (Array.isArray(payload.data)) return payload;
+  if (Array.isArray(payload.stocks)) return payload;
 
   const keyed = [
     ...valuesWithCode(payload.latest),
@@ -151,19 +162,43 @@ function flattenRecord(record) {
   };
 }
 
+function getKiwoomPriceScale() {
+  return numberEnv(["KIWOOM_PRICE_SCALE"], 1);
+}
+
+function getKiwoomTradeAmountMillionScale() {
+  return numberEnv(["KIWOOM_TRADE_AMOUNT_MILLION_SCALE", "KIWOOM_TRADE_AMOUNT_SCALE"], 0.1);
+}
+
+function normalizePrice(rawValue) {
+  const raw = Math.abs(toFiniteNumber(rawValue, 0));
+  return Math.round(raw * getKiwoomPriceScale());
+}
+
 function normalizeTradeAmountMillion(rawValue, price, volume) {
-  const raw = toFiniteNumber(rawValue, 0);
+  const raw = Math.abs(toFiniteNumber(rawValue, 0));
+  const scale = getKiwoomTradeAmountMillionScale();
   const computed = price > 0 && volume > 0 ? Math.round((price * volume) / 1_000_000) : 0;
 
-  if (raw <= 0) return computed;
+  if (raw > 0) {
+    return {
+      value: Math.round(raw * scale),
+      raw,
+      scale,
+      computed,
+      source: "kiwoom-fid14",
+      note: "Kiwoom FID 14 raw value converted to million KRW using KIWOOM_TRADE_AMOUNT_MILLION_SCALE."
+    };
+  }
 
-  const candidates = [raw, raw / 1_000, raw / 1_000_000, raw * 1_000, raw * 10_000]
-    .filter((value) => Number.isFinite(value) && value > 0)
-    .map((value) => Math.round(value));
-
-  if (!computed) return candidates.find((value) => value > 0) || 0;
-
-  return candidates.sort((left, right) => Math.abs(left - computed) - Math.abs(right - computed))[0] || computed;
+  return {
+    value: computed,
+    raw,
+    scale,
+    computed,
+    source: "price-volume-fallback",
+    note: "FID 14 was empty, so trade amount was computed from price and volume."
+  };
 }
 
 function normalizeQuote(input) {
@@ -171,7 +206,8 @@ function normalizeQuote(input) {
   const code = normalizeCode(pickFirst(record, ["code", "stockCode", "symbol", "종목코드", "9001", "9001_code"]));
   if (!code) return null;
 
-  const price = Math.abs(toFiniteNumber(pickFirst(record, ["price", "currentPrice", "close", "현재가", "10", "fid10"]), 0));
+  const rawPrice = pickFirst(record, ["price", "currentPrice", "close", "현재가", "10", "fid10"]);
+  const price = normalizePrice(rawPrice);
   const volume = Math.abs(toFiniteNumber(pickFirst(record, ["volume", "accVolume", "cumulativeVolume", "거래량", "누적거래량", "13", "fid13"]), 0));
   const rawTradeAmount = pickFirst(record, [
     "tradeAmountMillion",
@@ -184,14 +220,22 @@ function normalizeQuote(input) {
     "14",
     "fid14"
   ]);
+  const normalizedTradeAmount = normalizeTradeAmountMillion(rawTradeAmount, price, volume);
   const changeRate = toFiniteNumber(pickFirst(record, ["changeRate", "rate", "등락률", "12", "fid12"]), 0);
 
   return {
     code,
     name: compactText(pickFirst(record, ["name", "stockName", "종목명"])) || null,
     price,
+    rawPrice: toFiniteNumber(rawPrice, 0),
+    priceScale: getKiwoomPriceScale(),
     volume,
-    tradeAmountMillion: normalizeTradeAmountMillion(rawTradeAmount, price, volume),
+    tradeAmountMillion: normalizedTradeAmount.value,
+    rawTradeAmount: normalizedTradeAmount.raw,
+    computedTradeAmountMillion: normalizedTradeAmount.computed,
+    tradeAmountScale: normalizedTradeAmount.scale,
+    tradeAmountSource: normalizedTradeAmount.source,
+    tradeAmountNote: normalizedTradeAmount.note,
     changeRate,
     direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
     provider: "Kiwoom OpenAPI+ bridge",
@@ -221,6 +265,9 @@ export function getKiwoomBridgeRuntimeStatus(extra = {}) {
     registerCacheMs: KIWOOM_REGISTER_CACHE_MS,
     latestPathCandidates: getLatestPathCandidates(),
     healthPath: getHealthPath(),
+    priceScale: getKiwoomPriceScale(),
+    tradeAmountMillionScale: getKiwoomTradeAmountMillionScale(),
+    tradeAmountBasis: "kiwoom-fid14-fixed-scale",
     ...extra
   };
 }
@@ -240,7 +287,7 @@ async function registerWatchlist(candidates) {
 
   const body = {
     codes,
-    fids: process.env.KIWOOM_REAL_FIDS || "10;13;14;15;20;228",
+    fids: process.env.KIWOOM_REAL_FIDS || "10;12;13;14;15;20;228",
     screenNo: process.env.KIWOOM_SCREEN_NO || "9000"
   };
 
@@ -364,8 +411,15 @@ export async function enrichSnapshotWithKiwoom(snapshot, precisionWatchlist = sn
       ...candidate,
       name: quote.name || candidate.name,
       price: quote.price || candidate.price,
+      rawPrice: quote.rawPrice,
+      priceScale: quote.priceScale,
       volume: quote.volume || candidate.volume,
       tradeAmountMillion: quote.tradeAmountMillion || candidate.tradeAmountMillion,
+      rawTradeAmount: quote.rawTradeAmount,
+      computedTradeAmountMillion: quote.computedTradeAmountMillion,
+      tradeAmountScale: quote.tradeAmountScale,
+      tradeAmountSource: quote.tradeAmountSource,
+      tradeAmountNote: quote.tradeAmountNote,
       changeRate: Number.isFinite(quote.changeRate) ? quote.changeRate : candidate.changeRate,
       direction: quote.direction || candidate.direction,
       provider: quote.provider,
