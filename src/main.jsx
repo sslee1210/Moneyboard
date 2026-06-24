@@ -7,6 +7,7 @@ import "./right-panel-compact.css";
 import "./right-panel-trading.css";
 import "./right-panel-decision.css";
 import "./right-panel-responsive.css";
+import "./right-panel-intent.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
