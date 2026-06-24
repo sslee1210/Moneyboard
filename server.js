@@ -13,6 +13,30 @@ const DETAIL_CACHE_MS = Number(process.env.DETAIL_CACHE_MS || 20_000);
 const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS || 12_000);
 const DETAIL_CONCURRENCY = Number(process.env.DETAIL_CONCURRENCY || 8);
 const VOLUME_HISTORY_LIMIT = Number(process.env.VOLUME_HISTORY_LIMIT || 12);
+const SECTOR_TOP_STOCK_LIMIT = Number(process.env.SECTOR_TOP_STOCK_LIMIT || 40);
+
+const EXCLUDED_PRODUCT_KEYWORDS = [
+  "ETF",
+  "ETN",
+  "ELW",
+  "KODEX",
+  "TIGER",
+  "ACE",
+  "RISE",
+  "SOL",
+  "HANARO",
+  "KBSTAR",
+  "ARIRANG",
+  "KOSEF",
+  "TIMEFOLIO",
+  "PLUS",
+  "레버리지",
+  "인버스",
+  "선물",
+  "TR",
+  "커버드콜",
+  "액티브"
+];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -43,6 +67,18 @@ function compactText(value) {
     .replace(/\u00a0/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeName(value) {
+  return compactText(value).toUpperCase();
+}
+
+function isExchangeTradedProduct(stock) {
+  const code = String(stock?.code || "").trim();
+  const name = normalizeName(stock?.name);
+
+  if (!/^\d{6}$/.test(code)) return true;
+  return EXCLUDED_PRODUCT_KEYWORDS.some((keyword) => name.includes(keyword.toUpperCase()));
 }
 
 function parseNumber(value) {
@@ -131,6 +167,7 @@ function parseSectorList(html) {
 function parseSectorDetail(html, sector) {
   const $ = cheerio.load(html);
   const stocks = [];
+  let excludedProductCount = 0;
 
   $("td.name").each((_, nameCell) => {
     const row = $(nameCell).closest("tr");
@@ -146,7 +183,7 @@ function parseSectorDetail(html, sector) {
     if (!code || !name || cells.length < 9) return;
 
     const changeRate = parsePercent(cells[3]);
-    stocks.push({
+    const stock = {
       code,
       name,
       price: parseNumber(cells[1]),
@@ -161,7 +198,14 @@ function parseSectorDetail(html, sector) {
       direction: changeRate > 0 ? "up" : changeRate < 0 ? "down" : "flat",
       provider: "Naver Finance",
       naverUrl: `${NAVER_BASE_URL}/item/main.naver?code=${code}`
-    });
+    };
+
+    if (isExchangeTradedProduct(stock)) {
+      excludedProductCount += 1;
+      return;
+    }
+
+    stocks.push(stock);
   });
 
   stocks.sort((left, right) => right.tradeAmountMillion - left.tradeAmountMillion);
@@ -175,10 +219,12 @@ function parseSectorDetail(html, sector) {
 
   return {
     ...sector,
+    stockCount: Math.max(0, (sector.stockCount || stocks.length) - excludedProductCount),
+    excludedProductCount,
     tradingValueMillion,
     volume,
     weightedChangeRate,
-    topStocks: stocks.slice(0, 8),
+    topStocks: stocks.slice(0, SECTOR_TOP_STOCK_LIMIT),
     stocks,
     provider: "Naver Finance",
     fetchedAt: new Date().toISOString()
@@ -255,6 +301,7 @@ function summarizeSector(detail) {
     topStocks: detail.topStocks,
     topStockName: topStock?.name || null,
     topStockCode: topStock?.code || null,
+    excludedProductCount: detail.excludedProductCount || 0,
     naverUrl: detail.naverUrl,
     error: detail.error || null
   };
@@ -270,6 +317,7 @@ async function buildMarketSnapshot() {
   const summaries = details.map(summarizeSector).sort((a, b) => b.tradingValueMillion - a.tradingValueMillion);
   const totalTradingValueMillion = summaries.reduce((sum, sector) => sum + sector.tradingValueMillion, 0);
   const totalVolume = summaries.reduce((sum, sector) => sum + sector.volume, 0);
+  const excludedProductCount = summaries.reduce((sum, sector) => sum + (sector.excludedProductCount || 0), 0);
   const breadth = summaries.reduce(
     (acc, sector) => {
       acc.rising += sector.risingCount;
@@ -289,13 +337,15 @@ async function buildMarketSnapshot() {
     source: {
       name: "Naver Finance",
       url: `${NAVER_BASE_URL}/sise/sise_group.naver?type=upjong`,
-      tradingValueUnit: "millionKRW"
+      tradingValueUnit: "millionKRW",
+      excludes: ["ETF", "ETN", "ELW", "leveraged/inverse/theme ETP products"]
     },
     overview,
     totals: {
       sectorCount: summaries.length,
       tradingValueMillion: totalTradingValueMillion,
       volume: totalVolume,
+      excludedProductCount,
       breadth
     },
     sectors: summaries
@@ -378,6 +428,7 @@ app.get("/api/provider", (_, response) => {
     sectorDetail: "Naver Finance",
     overviewProvider: "Yahoo Finance",
     volumeProfile: "Naver Finance day-volume only",
+    excludes: ["ETF", "ETN", "ELW", "KODEX", "TIGER", "leveraged/inverse ETP products"],
     kis: { configured: false, enabled: false }
   });
 });
