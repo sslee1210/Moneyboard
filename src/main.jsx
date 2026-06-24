@@ -4,6 +4,7 @@ import App from "./App.jsx";
 import "./styles.css";
 import "./flow-alerts.css";
 import "./right-panel-compact.css";
+import "./right-panel-trading.css";
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
