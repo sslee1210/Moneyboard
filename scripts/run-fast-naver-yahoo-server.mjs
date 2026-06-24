@@ -17,7 +17,9 @@ const fastDefaults = {
   KIWOOM_REGISTER_REFRESH_MS: "3000",
   KIWOOM_REALTIME_PUSH_MS: "1000",
   KIWOOM_RESELECT_MS: "3000",
-  KIWOOM_REAL_FIDS: "10;13;14;15;20;228"
+  KIWOOM_REAL_FIDS: "10;12;13;14;15;20;228",
+  KIWOOM_TRADE_AMOUNT_MILLION_SCALE: "0.1",
+  KIWOOM_PRICE_SCALE: "1"
 };
 
 for (const [key, value] of Object.entries(fastDefaults)) {
@@ -32,6 +34,9 @@ console.log(
 );
 console.log(
   `[fast-runtime] sector search coverage: topStocks=${process.env.SECTOR_TOP_STOCK_LIMIT} per sector`
+);
+console.log(
+  `[fast-runtime] kiwoom trade amount scale: ${process.env.KIWOOM_TRADE_AMOUNT_MILLION_SCALE}x raw FID14 => million KRW`
 );
 
 await import("./run-vite-server.mjs");
