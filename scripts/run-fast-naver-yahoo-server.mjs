@@ -7,6 +7,7 @@ const fastDefaults = {
   REQUEST_TIMEOUT_MS: "5000",
   DETAIL_CONCURRENCY: "24",
   VOLUME_HISTORY_LIMIT: "12",
+  SECTOR_TOP_STOCK_LIMIT: "300",
   PRECISION_WATCH_LIMIT: "40",
   PRECISION_SOURCE_TOP_SECTORS: "16",
   PRECISION_MIN_TRADE_AMOUNT_MILLION: "0",
@@ -28,6 +29,9 @@ console.log(
 );
 console.log(
   `[fast-runtime] selected watchlist: limit=${process.env.PRECISION_WATCH_LIMIT}, sourceTopSectors=${process.env.PRECISION_SOURCE_TOP_SECTORS}, provider=${process.env.PRECISION_API_PROVIDER}`
+);
+console.log(
+  `[fast-runtime] sector search coverage: topStocks=${process.env.SECTOR_TOP_STOCK_LIMIT} per sector`
 );
 
 await import("./run-vite-server.mjs");
